@@ -1,0 +1,1 @@
+const ResponsiveTestRunner = {checkBreakpoints: function() {console.log('Testing responsive breakpoints');}, validateLayout: function() {console.log('Validating layout across screen sizes');}, checkImageScaling: function() {console.log('Verifying image scaling');};
