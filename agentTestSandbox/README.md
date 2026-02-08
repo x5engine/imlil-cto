@@ -1,6 +1,6 @@
 # Project Name
 
-Project description goes here.
+Description of your project goes here.
 
 ## Installation
 
@@ -13,3 +13,7 @@ npm install
 ```bash
 npm start
 ```
+
+## License
+
+MIT
