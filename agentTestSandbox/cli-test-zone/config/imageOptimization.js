@@ -1,0 +1,1 @@
+const imagemin = require('imagemin'); const mozjpeg = require('imagemin-mozjpeg'); const pngquant = require('imagemin-pngquant'); module.exports = { compress: async (source, destination) => { await imagemin([source + '/*.{jpg,png}'], { destination: destination, plugins: [ mozjpeg({ quality: 75 }), pngquant({ quality: [0.6, 0.8] }) ] }); } };
