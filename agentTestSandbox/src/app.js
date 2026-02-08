@@ -1,14 +1,20 @@
 const express = require('express');
-const routes = require('./routes');
+const requestLogger = require('./middleware/requestLogger');
+const logger = require('./utils/logger');
 
 const app = express();
 
-app.use('/api', routes);
+// Apply request logging middleware
+app.use(requestLogger);
 
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+// Error handling middleware
+app.use((err, req, res, next) => {
+  logger.error({
+    message: err.message,
+    stack: err.stack,
+    path: req.path
+  });
+  res.status(500).json({ error: 'Internal Server Error' });
 });
 
 module.exports = app;
