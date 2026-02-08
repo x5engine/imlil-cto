@@ -1,13 +1,1 @@
-{
-  "name": "project-name",
-  "version": "1.0.0",
-  "description": "Project description",
-  "main": "src/index.js",
-  "scripts": {
-    "start": "node src/index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "MIT"
-}
+{"name": "my-project","version": "1.0.0","description": "A new Node.js project","main": "index.js","scripts": {"test": "echo \"Error: no test specified\" && exit 1","start": "node index.js"},"keywords": [],"author": "","license": "ISC","dependencies": {"express": "^4.18.2"},"devDependencies": {"nodemon": "^3.0.1","jest": "^29.7.0"}}
