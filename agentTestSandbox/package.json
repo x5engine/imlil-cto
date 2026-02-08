@@ -1,1 +1,1 @@
-{ "dependencies": { "express": "^4.17.1", "winston": "^3.3.3" }}
+{ "name": "server-tests", "version": "1.0.0", "scripts": { "test": "jest", "test:watch": "jest --watch", "test:coverage": "jest --coverage" }, "devDependencies": { "jest": "^27.0.6", "supertest": "^6.1.3" } }
