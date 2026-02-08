@@ -1,1 +1,1 @@
-console.log('Client-side JavaScript loaded!');
+console.log('Static file serving is working!');
