@@ -21,7 +21,6 @@ import Piscina from 'piscina';
 async function getApiKey() {
     const provider = (process.env.IMLIL_PROVIDER || 'embedapi').toLowerCase();
 
-    // Each provider uses its own env var
     const keyEnvVars = {
         embedapi: 'IMLIL_API_KEY',
         openrouter: 'OPENROUTER_API_KEY',
@@ -33,7 +32,6 @@ async function getApiKey() {
         return process.env[envVar];
     }
 
-    // Check imlil key file if embedapi
     if (provider === 'embedapi') {
         const configPath = path.join(os.homedir(), '.imlil');
         try {
@@ -44,7 +42,6 @@ async function getApiKey() {
         }
     }
 
-    // Prompt for key
     const { apiKey } = await inquirer.prompt([
         {
             type: 'password',
@@ -55,7 +52,6 @@ async function getApiKey() {
     return apiKey;
 }
 
-// --- Display provider info ---
 function showProviderInfo() {
     const info = getProviderInfo();
     const config = {
@@ -77,7 +73,6 @@ program
     .option('--provider <name>', 'Override provider (embedapi|openrouter|custom).')
     .option('--model <name>', 'Override model name for the active provider.')
     .action(async (project_description, options) => {
-        // Allow --provider and --model CLI overrides
         if (options.provider) process.env.IMLIL_PROVIDER = options.provider;
         if (options.model) process.env.IMLIL_MODEL = options.model;
 
@@ -124,7 +119,6 @@ program
 
             screen.render();
         } else {
-            // No UI components for non-TTY mode
             logBox = null;
             agentStatusBox = null;
             statsBox = null;
@@ -184,7 +178,6 @@ program
             config.maxAgents = parseInt(options.maxAgents, 10);
         }
 
-        // Determine DB path for persistence across workers
         const dbPath = path.join(process.cwd(), '.imlil', 'tasks.db');
 
         await initializeDatabase(dbPath);
@@ -196,7 +189,6 @@ program
         await orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox, agentStatusBox, statsBox, progressBar);
     });
 
-// --- Status command ---
 program
     .command('status')
     .description('Check current provider configuration')
@@ -212,12 +204,15 @@ program
         console.log('  IMLIL_MODEL="deepseek-chat" IMLIL_PROVIDER=custom CUSTOM_API_KEY=... imlil make "..."');
     });
 
+// --- Shared orchestrator with safe TTY guards ---
+// All blessed UI calls are null-guarded so non-TTY (pipe) usage works.
+
 async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox, agentStatusBox, statsBox, progressBar) {
     const db = getDb();
     const scrumMaster = new ScrumAgent('Scrum Master', 'Manages the task backlog', null, apiKey, config);
     const validator = new ValidatorAgent('Validator', 'Validates completed tasks', null, apiKey, config);
     
-    logBox.log('{bold}Orchestrator: Agent army, ATTENTION! MISSION START!{/bold}');
+    console.log('Orchestrator: Agent army, ATTENTION! MISSION START!');
 
     const piscina = new Piscina({
         filename: path.resolve(projectRoot, 'src/agents/worker.js'),
@@ -229,39 +224,38 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
     const validationQueue = [];
 
     const updateAgentStatus = async () => {
-        let content = '{bold}ACTIVE OPERATORS:{/bold}\n';
-        let i = 1;
-        activeTasks.forEach((task) => {
-            const status = task.currentActivity || 'Initializing...';
-            // Truncate status if too long
-            const displayStatus = status.length > 40 ? status.substring(0, 37) + '...' : status;
-            content += `{yellow-fg}Operator ${i++}: ${displayStatus} | ${task.title}{/yellow-fg}\n`;
-        });
-        if (validationQueue.length > 0) {
-            content += '\n{bold}VALIDATION QUEUE:{/bold}\n';
-            validationQueue.forEach((item) => {
-                content += `{magenta-fg}Validator 1: CHECKING - ${item.task.title}{/magenta-fg}\n`;
+        if (logBox && agentStatusBox && statsBox) {
+            let content = '{bold}ACTIVE OPERATORS:{/bold}\n';
+            let i = 1;
+            activeTasks.forEach((task) => {
+                const status = task.currentActivity || 'Initializing...';
+                const displayStatus = status.length > 40 ? status.substring(0, 37) + '...' : status;
+                content += `{yellow-fg}Operator ${i++}: ${displayStatus} | ${task.title}{/yellow-fg}\n`;
             });
+            if (validationQueue.length > 0) {
+                content += '\n{bold}VALIDATION QUEUE:{/bold}\n';
+                validationQueue.forEach((item) => {
+                    content += `{magenta-fg}Validator 1: CHECKING - ${item.task.title}{/magenta-fg}\n`;
+                });
+            }
+            agentStatusBox.setContent(content);
+
+            const pendingCount = (await db.all('SELECT count(*) as count FROM tasks WHERE status = ?', 'pending'))[0].count;
+            const completedCount = (await db.all('SELECT count(*) as count FROM tasks WHERE status = ?', 'completed'))[0].count;
+            const totalCount = (await db.all('SELECT count(*) as count FROM tasks'))[0].count;
+
+            let statsContent = '';
+            statsContent += `{blue-fg}Operators Active: {/blue-fg}${activeTasks.size}/${config.maxAgents}\n`;
+            statsContent += `{blue-fg}Validators Active: {/blue-fg}${validationQueue.length > 0 ? 1 : 0}\n`;
+            statsContent += `{blue-fg}Tasks: {/blue-fg}${completedCount}/${totalCount} (${pendingCount} pending)\n`;
+            statsContent += `{blue-fg}Total Agents: {/blue-fg}${activeTasks.size + (validationQueue.length > 0 ? 1 : 0) + 1}\n`;
+            statsBox.setContent(statsContent);
+
+            if (screen) screen.render();
         }
-        agentStatusBox.setContent(content);
-
-        // Update Stats Box
-        const pendingCount = (await db.all('SELECT count(*) as count FROM tasks WHERE status = ?', 'pending'))[0].count;
-        const completedCount = (await db.all('SELECT count(*) as count FROM tasks WHERE status = ?', 'completed'))[0].count;
-        const totalCount = (await db.all('SELECT count(*) as count FROM tasks'))[0].count;
-
-        let statsContent = '';
-        statsContent += `{blue-fg}Operators Active: {/blue-fg}${activeTasks.size}/${config.maxAgents}\n`;
-        statsContent += `{blue-fg}Validators Active: {/blue-fg}${validationQueue.length > 0 ? 1 : 0}\n`;
-        statsContent += `{blue-fg}Tasks: {/blue-fg}${completedCount}/${totalCount} (${pendingCount} pending)\n`;
-        statsContent += `{blue-fg}Total Agents: {/blue-fg}${activeTasks.size + (validationQueue.length > 0 ? 1 : 0) + 1}\n`;
-        statsBox.setContent(statsContent);
-
-        screen.render();
     };
 
     const processTasks = async () => {
-        const totalTasks = (await db.all('SELECT * FROM tasks')).length;
         let isProcessing = false;
         let qaDone = false;
 
@@ -270,44 +264,37 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
             isProcessing = true;
 
             try {
-                // Refresh counts
                 let currentTotalTasks = (await db.all('SELECT count(*) as count FROM tasks'))[0].count;
                 let completedTasksCount = (await db.all('SELECT count(*) as count FROM tasks WHERE status = ?', 'completed'))[0].count;
                 let failedTasksCount = (await db.all('SELECT count(*) as count FROM tasks WHERE status = ?', 'failed'))[0].count;
                 
-                progressBar.filled = (completedTasksCount / currentTotalTasks) * 100;
+                if (progressBar) progressBar.filled = (completedTasksCount / currentTotalTasks) * 100;
                 await updateAgentStatus();
 
                 if (completedTasksCount + failedTasksCount >= currentTotalTasks) {
                     if (!qaDone) {
                         qaDone = true;
-                        logBox.log('\n{magenta-fg}{bold}Phase 4: QA & Self-Healing...{/bold}{/magenta-fg}');
-                        screen.render();
+                        console.log('\nPhase 4: QA & Self-Healing...');
 
                         try {
                             const { exec } = await import('child_process');
                             const util = await import('util');
                             const execPromise = util.promisify(exec);
 
-                            logBox.log('Running tests (npm test)...');
-                            screen.render();
-                            // Run tests with CI=true to avoid watch mode
+                            console.log('Running tests (npm test)...');
                             await execPromise('npm test -- --watchAll=false', { 
                                 cwd: process.cwd(),
                                 env: { ...process.env, CI: 'true' }
                             });
-                            logBox.log('{green-fg}Tests Passed!{/green-fg}');
+                            console.log('Tests Passed!');
 
-                            logBox.log('Running build (npm run build)...');
-                            screen.render();
+                            console.log('Running build (npm run build)...');
                             await execPromise('npm run build', { cwd: process.cwd() });
-                            logBox.log('{green-fg}Build Successful!{/green-fg}');
+                            console.log('Build Successful!');
                             
                         } catch (error) {
                             const errorOutput = (error.stdout || '') + '\n' + (error.stderr || '') + '\n' + error.message;
-                            logBox.log(`{red-fg}QA Failed! Generating fix task...{/red-fg}`);
-                            
-                            // Truncate error if too massive, but keep tail
+                            console.log(`QA Failed! Generating fix task...`);
                             const lastErrors = errorOutput.slice(-2000); 
                             
                             await scrumMaster.addTask(
@@ -316,17 +303,16 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                                 []
                             );
                             
-                            qaDone = false; // Reset to allow re-testing after fix
-                            screen.render();
-                            return; // Continue scheduler loop to pick up new task
+                            qaDone = false;
+                            return;
                         }
                     }
 
-                    progressBar.filled = 100;
-                    logBox.log('\n{blue-fg}{bold}MISSION COMPLETE! ALL TASKS PROCESSED & VERIFIED!{/bold}{/blue-fg}');
-                    screen.render();
+                    if (progressBar) progressBar.filled = 100;
+                    console.log('\nMISSION COMPLETE! ALL TASKS PROCESSED & VERIFIED!');
+                    if (screen) screen.render();
                     setTimeout(() => {
-                        screen.destroy();
+                        if (screen) screen.destroy();
                         process.exit(0);
                     }, 3000);
                     return;
@@ -336,8 +322,8 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                     const nextTask = await scrumMaster.getNextTask();
                     if (!nextTask) break;
 
-                    logBox.log(`{blue-fg}ScrumMaster: Dispatching task "${nextTask.title}" to Operator...{/blue-fg}`);
-                    nextTask.currentActivity = 'Receiving instructions...'; // Init status
+                    console.log(`ScrumMaster: Dispatching task "${nextTask.title}" to Operator...`);
+                    nextTask.currentActivity = 'Receiving instructions...';
                     activeTasks.set(nextTask.id, nextTask);
                     await updateAgentStatus();
 
@@ -357,7 +343,6 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
             }
         };
 
-        // Run scheduler immediately and set a heartbeat
         await scheduler();
         setInterval(scheduler, 200); 
     };
@@ -368,23 +353,23 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
         const item = validationQueue.shift();
         
         if (item.status !== 'completed') {
-            logBox.log(`{red-fg}Worker failed task "${item.task.title}": ${item.error || 'Unknown error'}. Re-queuing...{/red-fg}`);
+            console.log(`Worker failed task "${item.task.title}": ${item.error || 'Unknown error'}. Re-queuing...`);
             await scrumMaster.requeueTask(item.task);
             await updateAgentStatus();
             return;
         }
 
-        logBox.log(`{magenta-fg}Validator 1: Scrutinizing result for "${item.task.title}"...{/magenta-fg}`);
+        console.log(`Validator 1: Scrutinizing result for "${item.task.title}"...`);
         await updateAgentStatus();
         
         const { isValid, error } = await validator.validate(item.task, item.testPath);
 
         if (isValid) {
             await scrumMaster.markTaskAsCompleted(item.task);
-            logBox.log(`{green-fg}Validator 1: Task "${item.task.title}" passes!{/green-fg}`);
+            console.log(`Validator 1: Task "${item.task.title}" passes!`);
         } else {
             await scrumMaster.requeueTask(item.task);
-            logBox.log(`{red-fg}Validator 1: REJECTED! Task "${item.task.title}" failed: ${error}. Retrying...{/red-fg}`);
+            console.log(`Validator 1: REJECTED! Task "${item.task.title}" failed: ${error}. Retrying...`);
         }
         await updateAgentStatus();
     };
@@ -406,7 +391,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
     });
 
     await processTasks();
-    screen.key(['escape', 'q', 'C-c'], () => process.exit(0));
+    if (screen) screen.key(['escape', 'q', 'C-c'], () => process.exit(0));
 }
 
 program.parse(process.argv);

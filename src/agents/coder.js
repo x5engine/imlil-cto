@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import Agent from './Agent.js';
 import Action from '../actions/Action.js';
-import callEmbedApi from '../utils/embedapi.js';
+import callProvider from '../utils/providers.js';
 
 export default class Coder extends Agent {
   constructor(apiKey, statusCallback) {
@@ -15,9 +15,9 @@ export default class Coder extends Agent {
     this.statusCallback(`Analyzing task: ${task.title}`);
     console.log(`Coder agent is working on: ${task.title}`);
 
+    // Load context: plan + AST
     let blueprint = '';
 
-    // 1. Load AST (File Structure)
     try {
       const astData = await fs.readFile('ast.json', 'utf8');
       blueprint += `\n**PROJECT FILE STRUCTURE (AST):**\n${astData}\n`;
@@ -25,7 +25,6 @@ export default class Coder extends Agent {
       console.error('Error loading ast.json:', e.message);
     }
 
-    // 2. Load Detailed Plan
     try {
       const files = await fs.readdir('.imlil');
       const planFile = files.filter((f) => f.startsWith('plan-') && f.endsWith('.md')).sort().pop();
@@ -37,15 +36,47 @@ export default class Coder extends Agent {
       console.error('Error loading project plan:', e.message);
     }
 
-    // 3. Legacy Fallback
-    try {
-      const blueprintData = await fs.readFile('imlil.blueprint.json', 'utf8');
-      blueprint += `\n**PROJECT BLUEPRINT (LEGACY):**\n${blueprintData}\n`;
-    } catch (e) {
-      console.error('Error loading legacy blueprint:', e.message);
-    }
-
     const maxRetries = 3;
+
+    /**
+     * Robust JSON extraction: find the first/best JSON object in the response,
+     * handling incomplete or partial output from the model.
+     */
+    const extractJson = (text) => {
+      // Try full JSON parse first
+      const trimmed = text.trim();
+      if (trimmed.startsWith('{')) {
+        const end = trimmed.lastIndexOf('}');
+        if (end > 0) {
+          const candidate = trimmed.substring(0, end + 1);
+          try {
+            return JSON.parse(candidate);
+          } catch (e) {
+            // Not valid JSON, fall through
+          }
+        }
+      }
+      // Try regex for any JSON-like object
+      const jsonRegex = /\{[\s\S]*?"action"[\s\S]*?"filePath"[\s\S]*?\}/;
+      const match = trimmed.match(jsonRegex);
+      if (match) {
+        try {
+          return JSON.parse(match[0]);
+        } catch (e) {
+          throw new Error(`JSON parse error in response: ${e.message}`);
+        }
+      }
+      throw new Error('Could not find JSON with action and filePath in response');
+    };
+
+    /**
+     * Extract code content from markdown code blocks.
+     */
+    const extractCode = (text) => {
+      const codeBlockRegex = /```(?:javascript|js|ts|typescript|jsx|tsx|css|html|json|bash|sh|text)?\n([\s\S]*?)```/i;
+      const match = text.match(codeBlockRegex);
+      return match ? match[1].trim() : null;
+    };
 
     const callApiWithRetry = async (prompt, apiKey, attempt = 1) => {
       if (attempt > maxRetries) {
@@ -53,116 +84,71 @@ export default class Coder extends Agent {
       }
 
       try {
-        const response = await callEmbedApi(prompt, apiKey);
+        const response = await callProvider(prompt, { apiKey, maxTokens: 4096 });
         if (config.debug) {
           console.error(`-- DEBUG: Raw AI Response (Attempt ${attempt}) --\n${response}\n-- END DEBUG --`);
         }
 
-        // 1. Extract JSON for metadata
-        const jsonRegex = /\{[\s\S]*?\}/;
-        // eslint-disable-next-line prefer-destructuring
-        const jsonMatch = response.match(jsonRegex);
+        // Extract JSON for action metadata
+        const action = extractJson(response);
 
-        if (!jsonMatch || !jsonMatch[0]) {
-          throw new Error('Could not find JSON object in response');
+        // Extract code content from markdown code block
+        const codeContent = extractCode(response);
+        if (codeContent) {
+          action.content = codeContent;
         }
 
-        let action;
-        try {
-          action = JSON.parse(jsonMatch[0]);
-        } catch (e) {
-          throw new Error(`JSON parse error: ${e.message}`);
+        // Validate we have what we need
+        if (!action.filePath) {
+          throw new Error('Missing filePath in AI response');
         }
-
-        // 2. Extract Code Content (Robust Strategy)
-        // If content is not in JSON (or is empty), look for Markdown block
-        if (!action.content || action.content.trim() === '') {
-          const codeBlockRegex = /```(?:javascript|js|ts|typescript|jsx|tsx|css|html|json|bash|sh|text)?\n([\s\S]*?)```/i;
-          const codeMatch = response.match(codeBlockRegex);
-
-          if (codeMatch && codeMatch[1]) {
-            action.content = codeMatch[1];
-          } else if (action.action.startsWith('write') || action.action === 'modifyFile' || action.action === 'smartEdit') {
-            throw new Error('Missing file content. Content must be in a Markdown code block or in the JSON "content" field.');
-          }
+        if (!action.action) {
+          action.action = 'writeFile'; // default
+        }
+        if ((action.action === 'writeFile' || action.action === 'writeTest') && !action.content) {
+          throw new Error('Missing code content for write action');
         }
 
         return action;
       } catch (error) {
         console.error(`Attempt ${attempt} failed: ${error.message}. Retrying...`);
-        const newPrompt = `${prompt}\n\n**PREVIOUS ATTEMPT FAILED!**\nYour last response was invalid. Error: "${error.message}". \nPlease return a valid JSON object for the action/path, AND put the code content in a standard Markdown code block outside the JSON.`;
+        const newPrompt = `${prompt}\n\n**PREVIOUS ATTEMPT FAILED!**\nYour last response was invalid. Error: "${error.message}".\nPlease return EXACTLY this format:\n\n{ "action": "writeFile", "filePath": "src/file.js" }\n\`\`\`javascript\n// your code here\n\`\`\`
+
+Make sure the JSON is valid and the code is in a fenced code block.`;
         return callApiWithRetry(newPrompt, apiKey, attempt + 1);
       }
     };
 
-    const codePrompt = `
-            You are a specialized AI agent responsible for generating code.
-            
-            **TASK:** "${task.title} - ${task.description}"
-            ${blueprint}
+    // Step 1: Generate code
+    const codePrompt = `You are generating code for a task.
 
-            **AVAILABLE ACTIONS:**
-            1. "writeFile": Create a NEW file.
-            2. "modifyFile": Modify an EXISTING file surgically using jscodeshift (AST-based).
-            3. "smartEdit": Specialized for complex refactoring/imports (uses tree-sitter + jscodeshift).
+**TASK:** "${task.title} - ${task.description}"
+${blueprint}
 
-            **STRATEGY:**
-            - For NEW files, use "writeFile".
-            - For EXISTING files, use "modifyFile" or "smartEdit". This is the PREFERRED way to edit.
-            
-            **modifyFile INSTRUCTIONS:**
-            Your output must be the BODY of a jscodeshift transform function: \`(file, api) => string\`.
-            The API provides \`api.j\` (jscodeshift instance).
-            
-            **Example (Adding an import):**
-            { "action": "modifyFile", "filePath": "src/App.js" }
-            \`\`\`javascript
-            const j = api.j;
-            const root = j(file.source);
-            const newImport = j.importDeclaration(
-                [j.importSpecifier(j.identifier('MyComp'))],
-                j.literal('./MyComp')
-            );
-            root.find(j.ImportDeclaration).at(0).insertBefore(newImport);
-            return root.toSource();
-            \`\`\`
+**ACTION:** Create the file with the code content.
+**FILE:** Choose the right file path based on the AST.
 
-            **Example (Updating a value):**
-            { "action": "modifyFile", "filePath": "src/config.js" }
-            \`\`\`javascript
-            const j = api.j;
-            return j(file.source)
-                .find(j.Identifier, { name: 'VERSION' })
-                .replaceWith(j.literal('2.0.0'))
-                .toSource();
-            \`\`\`
+**OUTPUT FORMAT (EXACT):**
+{ "action": "writeFile", "filePath": "path/to/file.js" }
+\`\`\`javascript
+// The complete file content here
+\`\`\``;
 
-            **OUTPUT FORMAT:**
-            { "action": "modifyFile", "filePath": "path/to/file.js" }
-            \`\`\`javascript
-            // jscodeshift code here
-            \`\`\`
-        `;
+    // Step 2: Generate test if applicable
+    const testPrompt = `You are generating a unit test for a task.
 
-    const testPrompt = `
-            You are a specialized AI agent responsible for generating unit tests.
-            
-            **TASK:** "${task.title} - ${task.description}"
-            ${blueprint}
+**TASK:** "${task.title} - ${task.description}"
+${blueprint}
 
-            **INSTRUCTIONS:**
-            1.  Write the unit test for this task.
-            2.  Output a JSON object with the 'action' ("writeTest") and 'filePath'.
-            3.  Output the *test code* in a Markdown code block.
-            
-            **RULE:** Tests must be in a "__tests__" folder at the same level as the source file.
+**INSTRUCTIONS:**
+1. Write a unit test for the code created in this task.
+2. Tests go in a "__tests__" folder at the same level as the source.
 
-            **REQUIRED OUTPUT FORMAT:**
-            { "action": "writeTest", "filePath": "src/__tests__/file.test.js" }
-            \`\`\`javascript
-            // Test content
-            \`\`\`
-        `;
+**OUTPUT FORMAT (EXACT):**
+{ "action": "writeTest", "filePath": "src/__tests__/file.test.js" }
+\`\`\`javascript
+// test content here
+\`\`\``;
 
     try {
       this.statusCallback(`Generating code for: ${task.title}`);
