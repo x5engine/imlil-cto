@@ -2,8 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import Agent from './Agent.js';
 import { getDb } from '../utils/db.js';
-import { callStructured } from '../utils/providers.js';
-import callProvider from '../utils/providers.js';
+import { callStructured, callProvider } from '../utils/providers.js';
 
 class SupervisorAgent extends Agent {
   constructor(name, purpose, apiKey, config) {
@@ -19,7 +18,7 @@ class SupervisorAgent extends Agent {
     const imlilDir = path.resolve('.imlil');
     await fs.mkdir(imlilDir, { recursive: true });
 
-    // Phase 1: Plan (markdown — free text)
+    // Phase 1: Plan (markdown)
     console.log('Phase 1: Generating comprehensive plan...');
     const dateStr = new Date().toISOString().split('T')[0];
     const planPath = path.join(imlilDir, `plan-${dateStr}.md`);
@@ -27,15 +26,16 @@ class SupervisorAgent extends Agent {
     await fs.writeFile(planPath, planContent);
     console.log(`  => Plan saved to ${planPath}`);
 
-    // Phase 2: AST (structured JSON via callStructured — guaranteed valid)
+    // Phase 2: AST (structured JSON)
     console.log('Phase 2: Architecting file structure (AST)...');
     const ast = await this.generateAST(projectDescription, planContent);
     await fs.writeFile('ast.json', JSON.stringify(ast, null, 2));
     console.log(`  => AST with ${Object.keys(ast).length} files saved`);
 
-    // Phase 3: Tasks (structured JSON — guaranteed valid)
+    // Phase 3: Tasks
     console.log('Phase 3: Deriving actionable tasks...');
     const tasks = await this.generateTasks(planContent, ast);
+    console.log(`  => ${tasks.length} tasks generated`);
 
     // Phase 4: Populate DB
     console.log('Phase 4: Populating task database...');
@@ -69,21 +69,19 @@ class SupervisorAgent extends Agent {
     console.log('Plan ready. Execution handed off to Orchestrator.');
   }
 
-  async retryPrompt(promptFn, attempt = 1, maxRetries = 3) {
-    if (attempt > maxRetries) {
-      throw new Error(`Failed after ${maxRetries} attempts`);
+  async withRetry(fn, maxRetries = 3) {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn();
+      } catch (error) {
+        console.error(`Attempt ${i + 1} failed: ${error.message}. Retrying...`);
+      }
     }
-    try {
-      return await promptFn();
-    } catch (error) {
-      console.error(`Attempt ${attempt} failed: ${error.message}. Retrying...`);
-      return this.retryPrompt(promptFn, attempt + 1, maxRetries);
-    }
+    throw new Error(`Failed after ${maxRetries} attempts`);
   }
 
   async generatePlan(description) {
-    return this.retryPrompt(async () => {
-      const prompt = `Create a comprehensive development plan for: "${description}".
+    const prompt = `Create a comprehensive development plan for: "${description}".
 
 Include:
 1. Tech stack (exact technologies, versions)
@@ -92,13 +90,11 @@ Include:
 4. Step-by-step implementation plan
 
 Return as clean MARKDOWN.`;
-      return callProvider(prompt, { apiKey: this.apiKey, maxTokens: 8192 });
-    });
+    return this.withRetry(() => callProvider(prompt, { apiKey: this.apiKey, maxTokens: 8192 }));
   }
 
   async generateAST(description, planContent) {
-    return this.retryPrompt(async () => {
-      const prompt = `Based on the plan below, generate a JSON file structure (AST).
+    const prompt = `Based on the plan below, generate a JSON file structure (AST).
 
 PLAN: ${planContent.slice(0, 3000)}
 
@@ -106,22 +102,19 @@ Return a JSON object where keys are file paths relative to project root.
 Example: { "src/index.js": "Entry point", "package.json": "Manifest" }
 
 Use response_format to return valid JSON.`;
-      return callStructured(prompt, { apiKey: this.apiKey, maxTokens: 8192 });
-    });
+    return this.withRetry(() => callStructured(prompt, { apiKey: this.apiKey, maxTokens: 8192 }));
   }
 
   async generateTasks(planContent, ast) {
     const astStr = JSON.stringify(ast, null, 2);
-
-    return this.retryPrompt(async () => {
-      const prompt = `Based on the project plan and file structure, create actionable tasks.
+    const prompt = `Based on the project plan and file structure, create actionable tasks.
 
 PLAN: ${planContent.slice(0, 2000)}
 
 FILE STRUCTURE: ${astStr}
 
 Return a JSON object with a "tasks" array. Each task has:
-- id: number
+- id: number (unique integer)
 - title: string
 - description: string
 - dependencies: number[] (empty array if no deps)
@@ -129,11 +122,16 @@ Return a JSON object with a "tasks" array. Each task has:
 IMPORTANT:
 - Break into granular single-file tasks
 - Minimize dependencies for maximum parallelism
-- Order logically (setup → core logic → UI → tests)
+- Order logically (setup -> core logic -> UI -> tests)
 
 Return valid JSON with a "tasks" array.`;
+    return this.withRetry(async () => {
       const result = await callStructured(prompt, { apiKey: this.apiKey, maxTokens: 8192 });
-      return result.tasks || result;
+      const tasks = result?.tasks || result;
+      if (!tasks || !Array.isArray(tasks) || tasks.length === 0) {
+        throw new Error(`generateTasks: expected non-empty array, got ${JSON.stringify(tasks).slice(0, 200)}`);
+      }
+      return tasks;
     });
   }
 }
