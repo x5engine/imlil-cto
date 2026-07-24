@@ -270,7 +270,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                 if (progressBar) progressBar.filled = (completedTasksCount / currentTotalTasks) * 100;
                 await updateAgentStatus();
 
-                if (completedTasksCount + failedTasksCount >= currentTotalTasks) {
+                if (pendingTasksCount === 0 && activeTasks.size === 0) {
                     if (!qaDone) {
                         qaDone = true;
                         console.log('\nPhase 4: QA & Self-Healing...');
