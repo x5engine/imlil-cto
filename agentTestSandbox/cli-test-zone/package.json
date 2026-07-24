@@ -1,1 +1,0 @@
-{"name":"optimized-app","version":"1.0.0","dependencies":{"imagemin":"^8.0.1","imagemin-mozjpeg":"^9.0.0","imagemin-pngquant":"^9.0.2","terser-webpack-plugin":"^5.3.0","mini-css-extract-plugin":"^2.4.5","css-minimizer-webpack-plugin":"^3.4.1"},"scripts":{"build":"webpack --config config/webpack.prod.js","optimize-images":"node scripts/optimize-images.js"}}

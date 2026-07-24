@@ -1,1 +1,0 @@
-{"env": "staging","database": {"host": "staging-db.example.com","port": 5432,"name": "staging_db","user": "${DB_USER}","password": "${DB_PASSWORD}"},"redis": {"host": "staging-redis.example.com","port": 6379},"logging": {"level": "info"}}

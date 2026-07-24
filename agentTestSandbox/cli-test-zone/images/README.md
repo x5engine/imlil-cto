@@ -1,1 +1,0 @@
-This directory contains project images, icons, and other visual assets.

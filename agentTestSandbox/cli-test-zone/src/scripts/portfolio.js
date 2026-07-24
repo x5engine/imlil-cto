@@ -1,1 +1,0 @@
-document.addEventListener('DOMContentLoaded', function() { const portfolioItems = document.querySelectorAll('.portfolio-item'); portfolioItems.forEach(item => { item.addEventListener('click', function(e) { if (!e.target.classList.contains('portfolio-link')) { const link = this.querySelector('.portfolio-link'); if (link) { link.click(); } } }); }); });

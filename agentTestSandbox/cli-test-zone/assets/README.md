@@ -1,1 +1,0 @@
-This directory contains project assets such as fonts, documents, and other resources.

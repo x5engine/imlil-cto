@@ -1,1 +1,0 @@
-const logger = require('../config/logger'); const requestLogger = (req, res, next) => { const startTime = new Date(); res.on('finish', () => { const duration = new Date() - startTime; logger.info({ type: 'request', method: req.method, url: req.url, status: res.statusCode, duration, ip: req.ip, userAgent: req.get('user-agent') }); }); next(); }; module.exports = requestLogger;

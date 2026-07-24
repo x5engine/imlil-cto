@@ -1,1 +1,0 @@
-const express = require('express'); const requestLogger = require('./middleware/requestLogger'); const logger = require('./config/logger'); const app = express(); app.use(requestLogger); logger.info('Application started'); module.exports = app;

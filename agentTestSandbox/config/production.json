@@ -1,1 +1,0 @@
-{"env": "production","database": {"host": "${DB_HOST}","port": 5432,"name": "${DB_NAME}","user": "${DB_USER}","password": "${DB_PASSWORD}"},"redis": {"host": "${REDIS_HOST}","port": 6379},"logging": {"level": "error"}}
