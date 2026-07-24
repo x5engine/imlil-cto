@@ -1,19 +1,10 @@
-import EmbedAPI from '@embedapi/core';
+/**
+ * Legacy wrapper — delegates to the multi-provider system.
+ * Maintains the same callEmbedApi(prompt, apiKey) signature
+ * so existing code works without changes.
+ */
+import callProvider from './providers.js';
 
 export default async function callEmbedApi(prompt, apiKey) {
-  const embedApi = new EmbedAPI(apiKey);
-  try {
-    const response = await embedApi.generate({
-      service: 'anthropic',
-      model: 'claude-3-5-sonnet-20241022',
-      messages: [{ role: 'user', content: prompt }],
-      maxTokens: 2048,
-      timeout: 120000, // 120 seconds
-    });
-    return response.data;
-  } catch (error) {
-    console.error('Error calling EmbedAPI SDK:', error);
-    // Let the worker handle the timeout error
-    throw error;
-  }
+  return callProvider(prompt, { apiKey, maxTokens: 4096 });
 }

@@ -166,10 +166,10 @@ export default class Coder extends Agent {
 
     try {
       this.statusCallback(`Generating code for: ${task.title}`);
-      const codeAction = callApiWithRetry(codePrompt, this.apiKey);
+      const codeAction = await callApiWithRetry(codePrompt, this.apiKey);
 
       this.statusCallback(`Generating tests for: ${task.title}`);
-      const testAction = callApiWithRetry(testPrompt, this.apiKey);
+      const testAction = await callApiWithRetry(testPrompt, this.apiKey);
 
       const codePath = codeAction.filePath;
       const testPath = testAction.filePath;

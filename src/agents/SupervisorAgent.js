@@ -2,12 +2,11 @@ import fs from 'fs/promises';
 import path from 'path';
 import Agent from './Agent.js';
 import { getDb } from '../utils/db.js';
-import callEmbedApi from '../utils/embedapi.js';
+import callProvider from '../utils/providers.js';
 
 class SupervisorAgent extends Agent {
-  constructor(name, purpose, aiModel, apiKey, config) {
+  constructor(name, purpose, apiKey, config) {
     super(name, purpose);
-    this.aiModel = aiModel;
     this.apiKey = apiKey;
     this.config = config;
     this.db = getDb();
@@ -84,7 +83,7 @@ class SupervisorAgent extends Agent {
     }
 
     try {
-      const response = await callEmbedApi(prompt, this.apiKey);
+      const response = await callProvider(prompt, { apiKey: this.apiKey });
 
       if (type === 'markdown') {
         return response; // No parsing needed

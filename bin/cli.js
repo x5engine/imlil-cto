@@ -9,7 +9,7 @@ import { initializeDatabase, getDb } from '../src/utils/db.js';
 import SupervisorAgent from '../src/agents/SupervisorAgent.js';
 import ScrumAgent from '../src/agents/ScrumAgent.js';
 import ValidatorAgent from '../src/agents/ValidatorAgent.js';
-import { callEmbedApi } from '../src/utils/embedapi.js';
+import callProvider, { getProviderInfo } from '../src/utils/providers.js';
 import os from 'os';
 import inquirer from 'inquirer';
 import blessed from 'blessed';
@@ -19,25 +19,52 @@ import Piscina from 'piscina';
 // --- API Key Management ---
 
 async function getApiKey() {
-    if (process.env.IMLIL_API_KEY) {
-        return process.env.IMLIL_API_KEY;
+    const provider = (process.env.IMLIL_PROVIDER || 'embedapi').toLowerCase();
+
+    // Each provider uses its own env var
+    const keyEnvVars = {
+        embedapi: 'IMLIL_API_KEY',
+        openrouter: 'OPENROUTER_API_KEY',
+        custom: 'CUSTOM_API_KEY',
+    };
+
+    const envVar = keyEnvVars[provider] || 'IMLIL_API_KEY';
+    if (process.env[envVar]) {
+        return process.env[envVar];
     }
 
-    const configPath = path.join(os.homedir(), '.imlil');
-    try {
-        const apiKey = await fs.readFile(configPath, 'utf8');
-        return apiKey.trim();
-    } catch (error) {
-        const { apiKey } = await inquirer.prompt([
-            {
-                type: 'password',
-                name: 'apiKey',
-                message: 'Please enter your EmbedAPI key:',
-            },
-        ]);
-        await fs.writeFile(configPath, apiKey);
-        return apiKey;
+    // Check imlil key file if embedapi
+    if (provider === 'embedapi') {
+        const configPath = path.join(os.homedir(), '.imlil');
+        try {
+            const apiKey = await fs.readFile(configPath, 'utf8');
+            return apiKey.trim();
+        } catch (error) {
+            // fall through to prompt
+        }
     }
+
+    // Prompt for key
+    const { apiKey } = await inquirer.prompt([
+        {
+            type: 'password',
+            name: 'apiKey',
+            message: `Please enter your API key for provider "${provider}" (env: ${envVar}):`,
+        },
+    ]);
+    return apiKey;
+}
+
+// --- Display provider info ---
+function showProviderInfo() {
+    const info = getProviderInfo();
+    const config = {
+        embedapi: process.env.IMLIL_API_KEY ? '****' : 'not set',
+        openrouter: process.env.OPENROUTER_API_KEY ? '****' : 'not set',
+        custom: process.env.CUSTOM_API_KEY ? '****' : 'not set',
+    };
+    const prov = (process.env.IMLIL_PROVIDER || 'embedapi').toLowerCase();
+    console.log(`Provider: ${info}  (key: ${config[prov] || 'not set'})`);
 }
 
 // --- Main Application ---
@@ -47,7 +74,15 @@ program
     .description('Create a new project by orchestrating agents')
     .option('--debug', 'Enable debug mode to see raw AI responses.')
     .option('--max-agents <num>', 'Set the maximum number of parallel agents.')
+    .option('--provider <name>', 'Override provider (embedapi|openrouter|custom).')
+    .option('--model <name>', 'Override model name for the active provider.')
     .action(async (project_description, options) => {
+        // Allow --provider and --model CLI overrides
+        if (options.provider) process.env.IMLIL_PROVIDER = options.provider;
+        if (options.model) process.env.IMLIL_MODEL = options.model;
+
+        showProviderInfo();
+
         const isTTY = process.stdout.isTTY;
         let screen, grid, logBox, agentStatusBox, statsBox, progressBar;
 
@@ -114,7 +149,8 @@ program
             logStream.write(`${new Date().toISOString()} - ERROR: ${message}\n`);
         };
 
-        setTimeout(() => {
+        // 10-minute timeout safeguard
+        const timeoutId = setTimeout(() => {
             if (logBox) logBox.log('{red-fg}MISSION ABORTED: Time limit exceeded (10m).{/red-fg}');
             else console.log('MISSION ABORTED: Time limit exceeded (10m).');
             logStream.write(`${new Date().toISOString()} - MISSION ABORTED: Time limit exceeded.\n`);
@@ -148,23 +184,35 @@ program
             config.maxAgents = parseInt(options.maxAgents, 10);
         }
 
-        const aiModel = {
-            generateText: async (params) => {
-                const { messages } = params;
-                const lastMessage = messages[messages.length - 1];
-                const fullPrompt = `${config.cliPersonality}\n\n${lastMessage.content}`;
-                const response = await callEmbedApi(fullPrompt, apiKey);
-                return { completion: [{ text: response }] };
-            }
-        };
+        // Determine DB path for persistence across workers
+        const dbPath = path.join(process.cwd(), '.imlil', 'tasks.db');
 
-        await initializeDatabase();
-        const supervisor = new SupervisorAgent('Supervisor', 'Orchestrates the project', aiModel, apiKey, config);
+        await initializeDatabase(dbPath);
+        const supervisor = new SupervisorAgent('Supervisor', 'Orchestrates the project', apiKey, config);
         await supervisor.run(project_description);
-        await orchestrator(config, apiKey, projectRoot, screen, logBox, agentStatusBox, statsBox, progressBar);
+        
+        clearTimeout(timeoutId);
+        
+        await orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox, agentStatusBox, statsBox, progressBar);
     });
 
-async function orchestrator(config, apiKey, projectRoot, screen, logBox, agentStatusBox, statsBox, progressBar) {
+// --- Status command ---
+program
+    .command('status')
+    .description('Check current provider configuration')
+    .action(() => {
+        showProviderInfo();
+        console.log('');
+        console.log('Set IMLIL_PROVIDER to one of: embedapi (default), openrouter, custom');
+        console.log('Then set the corresponding API key env var.');
+        console.log('');
+        console.log('Examples:');
+        console.log('  IMLIL_PROVIDER=openrouter OPENROUTER_API_KEY=sk-... imlil make "..."');
+        console.log('  IMLIL_PROVIDER=custom CUSTOM_API_KEY=sk-... CUSTOM_API_URL=http://... imlil make "..."');
+        console.log('  IMLIL_MODEL="deepseek-chat" IMLIL_PROVIDER=custom CUSTOM_API_KEY=... imlil make "..."');
+    });
+
+async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox, agentStatusBox, statsBox, progressBar) {
     const db = getDb();
     const scrumMaster = new ScrumAgent('Scrum Master', 'Manages the task backlog', null, apiKey, config);
     const validator = new ValidatorAgent('Validator', 'Validates completed tasks', null, apiKey, config);
@@ -293,7 +341,7 @@ async function orchestrator(config, apiKey, projectRoot, screen, logBox, agentSt
                     activeTasks.set(nextTask.id, nextTask);
                     await updateAgentStatus();
 
-                    piscina.run({ task: nextTask, apiKey, config }).then(async (result) => {
+                    piscina.run({ task: nextTask, apiKey, config, dbPath }).then(async (result) => {
                         activeTasks.delete(nextTask.id);
                         validationQueue.push(result);
                         await updateAgentStatus();
@@ -352,11 +400,6 @@ async function orchestrator(config, apiKey, projectRoot, screen, logBox, agentSt
             const task = activeTasks.get(msg.taskId);
             if (task) {
                 task.currentActivity = msg.action;
-                // We could call updateAgentStatus here, but it might be too frequent.
-                // The scheduler calls it every 200ms anyway.
-                // But for "live" feel, let's call it.
-                // Optimization: Debounce or throttle this if it flickers too much.
-                // For now, raw update.
                 updateAgentStatus();
             }
         }

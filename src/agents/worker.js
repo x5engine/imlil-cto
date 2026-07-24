@@ -1,6 +1,7 @@
 import { parentPort } from 'worker_threads';
 import Coder from './coder.js';
-import { initializeDatabase } from '../utils/db.js';
+import { connectToDatabase } from '../utils/db.js';
+import path from 'path';
 
 let dbInitialized = false;
 
@@ -21,9 +22,12 @@ console.error = (...args) => {
   parentPort.postMessage({ type: 'log', level: 'error', message });
 };
 
-export default async ({ task, apiKey, config }) => {
+export default async ({ task, apiKey, config, dbPath }) => {
   if (!dbInitialized) {
-    await initializeDatabase();
+    // Connect to the shared file-based DB instead of creating a new :memory: one
+    if (dbPath) {
+      await connectToDatabase(dbPath);
+    }
     dbInitialized = true;
   }
 
@@ -44,7 +48,7 @@ export default async ({ task, apiKey, config }) => {
       status: 'completed', task, codePath, testPath,
     };
   } catch (error) {
-    if (error.message.includes('timed out')) {
+    if (error.message && error.message.includes('timed out')) {
       return { status: 'timed_out', task, error: error.message };
     }
     return { status: 'failed', task, error: error.message };
