@@ -351,7 +351,17 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                     }).catch(async (err) => {
                         console.error(`CRITICAL ERROR in Worker for task "${nextTask.title}": ${err.message}`);
                         activeTasks.delete(nextTask.id);
-                        await scrumMaster.requeueTask(nextTask);
+                        // Check retry count from DB directly
+                        const db = getDb();
+                        const dbTask = await db.all('SELECT retries FROM tasks WHERE id = ?', nextTask.id);
+                        const currentRetries = (dbTask[0]?.retries || 0) + 1;
+                        if (currentRetries >= 3) {
+                            console.log(`Task "${nextTask.title}" failed ${currentRetries} times. Marking as failed.`);
+                            await db.run('UPDATE tasks SET status = ?, retries = ? WHERE id = ?', 'failed', currentRetries, nextTask.id);
+                        } else {
+                            console.log(`Re-queuing task "${nextTask.title}" (retry ${currentRetries}/3)...`);
+                            await scrumMaster.requeueTask(nextTask);
+                        }
                         await updateAgentStatus();
                     });
                 }
