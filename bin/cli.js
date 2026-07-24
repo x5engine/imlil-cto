@@ -9,6 +9,7 @@ import { initializeDatabase, getDb } from '../src/utils/db.js';
 import SupervisorAgent from '../src/agents/SupervisorAgent.js';
 import ScrumAgent from '../src/agents/ScrumAgent.js';
 import ValidatorAgent from '../src/agents/ValidatorAgent.js';
+import ExpansionAgent from '../src/agents/ExpansionAgent.js';
 import callProvider, { getProviderInfo } from '../src/utils/providers.js';
 import os from 'os';
 import inquirer from 'inquirer';
@@ -210,6 +211,7 @@ program
 async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox, agentStatusBox, statsBox, progressBar) {
     const db = getDb();
     const scrumMaster = new ScrumAgent('Scrum Master', 'Manages the task backlog', null, apiKey, config);
+    const expansionPlanner = new ExpansionAgent(apiKey, config);
     
     console.log('Orchestrator: Agent army, ATTENTION! MISSION START!');
 
@@ -375,31 +377,36 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
     };
 
     const handleValidation = async () => {
-        if (validationQueue.length === 0) return;
+            if (validationQueue.length === 0) return;
 
-        const item = validationQueue.shift();
-        
-        if (item.status !== 'completed') {
-            console.log(`Worker failed task "${item.task.title}": ${item.error || 'Unknown error'}. Re-queuing...`);
-            await scrumMaster.requeueTask(item.task);
+            const item = validationQueue.shift();
+
+            if (item.status !== 'completed') {
+                console.log(`Worker failed task "${item.task.title}": ${item.error || 'Unknown error'}. Re-queuing...`);
+                await scrumMaster.requeueTask(item.task);
+                await updateAgentStatus();
+                return;
+            }
+
+            const { isValid, error } = await ValidatorAgent.validate(item.task, item.testPath);
+
+            if (isValid) {
+                console.log(`Validator: Task "${item.task.title}" passes!`);
+                await scrumMaster.markTaskAsCompleted(item.task);
+
+                // Feed the army — generate follow-up tasks from completed work
+                const newTaskIds = await expansionPlanner.expandFrom(item.task, item.codePath, item.testPath);
+                if (newTaskIds.length > 0) {
+                    console.log(`Expansion: ${newTaskIds.length} new tasks spawned by "${item.task.title}"`);
+                }
+            } else {
+                console.log(`Validator: REJECTED! Task "${item.task.title}" failed: ${error}. Retrying...`);
+                await scrumMaster.requeueTask(item.task);
+            }
+
             await updateAgentStatus();
-            return;
-        }
-
-        console.log(`Validator 1: Scrutinizing result for "${item.task.title}"...`);
-        await updateAgentStatus();
-        
-        const { isValid, error } = await ValidatorAgent.validate(item.task, item.testPath);
-
-        if (isValid) {
-            await scrumMaster.markTaskAsCompleted(item.task);
-            console.log(`Validator 1: Task "${item.task.title}" passes!`);
-        } else {
-            await scrumMaster.requeueTask(item.task);
-            console.log(`Validator 1: REJECTED! Task "${item.task.title}" failed: ${error}. Retrying...`);
-        }
-        await updateAgentStatus();
-    };
+            handleValidation();
+        };
 
     piscina.on('message', (msg) => {
         if (msg && msg.type === 'log') {
