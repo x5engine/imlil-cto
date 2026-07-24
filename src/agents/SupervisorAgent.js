@@ -83,7 +83,7 @@ class SupervisorAgent extends Agent {
     }
 
     try {
-      const response = await callProvider(prompt, { apiKey: this.apiKey });
+      const response = await callProvider(prompt, { apiKey: this.apiKey, maxTokens: 8192 });
 
       if (type === 'markdown') {
         return response; // No parsing needed
