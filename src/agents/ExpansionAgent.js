@@ -72,14 +72,13 @@ Only generate tasks that genuinely improve the project. Return empty array if no
         const deps = [task.id];
 
         await this.db.run(
-          'INSERT INTO tasks (id, title, description, status, dependencies, retries, priority) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO tasks (id, title, description, status, dependencies, retries) VALUES (?, ?, ?, ?, ?, ?)',
           id,
           t.title,
           t.description || `Follow-up from: ${task.title}`,
           'pending',
           JSON.stringify(deps),
           0,
-          t.priority || 'medium',
         );
         added.push(id);
       }
