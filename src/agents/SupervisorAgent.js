@@ -2,7 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import Agent from './Agent.js';
 import { getDb } from '../utils/db.js';
-import { callStructured, callProvider } from '../utils/providers.js';
+import { callStructured } from '../utils/providers.js';
+import callProvider from '../utils/providers.js';
 
 class SupervisorAgent extends Agent {
   constructor(name, purpose, apiKey, config) {
