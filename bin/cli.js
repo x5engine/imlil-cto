@@ -210,7 +210,6 @@ program
 async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox, agentStatusBox, statsBox, progressBar) {
     const db = getDb();
     const scrumMaster = new ScrumAgent('Scrum Master', 'Manages the task backlog', null, apiKey, config);
-    const validator = new ValidatorAgent('Validator', 'Validates completed tasks', null, apiKey, config);
     
     console.log('Orchestrator: Agent army, ATTENTION! MISSION START!');
 
@@ -362,7 +361,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
         console.log(`Validator 1: Scrutinizing result for "${item.task.title}"...`);
         await updateAgentStatus();
         
-        const { isValid, error } = await validator.validate(item.task, item.testPath);
+        const { isValid, error } = await ValidatorAgent.validate(item.task, item.testPath);
 
         if (isValid) {
             await scrumMaster.markTaskAsCompleted(item.task);
