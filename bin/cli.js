@@ -265,6 +265,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
             try {
                 let currentTotalTasks = (await db.all('SELECT count(*) as count FROM tasks'))[0].count;
                 let completedTasksCount = (await db.all('SELECT count(*) as count FROM tasks WHERE status = ?', 'completed'))[0].count;
+                let pendingTasksCount = (await db.all('SELECT count(*) as count FROM tasks WHERE status = ?', 'pending'))[0].count;
                 let failedTasksCount = (await db.all('SELECT count(*) as count FROM tasks WHERE status = ?', 'failed'))[0].count;
                 
                 if (progressBar) progressBar.filled = (completedTasksCount / currentTotalTasks) * 100;
