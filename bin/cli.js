@@ -330,7 +330,16 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                         activeTasks.delete(nextTask.id);
                         // Handle failed/timeout results from worker
                         if (result.status !== 'completed') {
-                            console.log(`Worker returned status "${result.status}" for task "${nextTask.title}": ${result.error || 'Unknown error'}. Re-queuing...`);
+                            // Check retry count before looping forever
+                            const retries = nextTask.retries || 0;
+                            if (retries >= 3) {
+                                console.log(`Task "${nextTask.title}" failed ${retries + 1} times. Marking as failed.`);
+                                const db = getDb();
+                                await db.run('UPDATE tasks SET status = ?, retries = ? WHERE id = ?', 'failed', retries + 1, nextTask.id);
+                                await updateAgentStatus();
+                                return;
+                            }
+                            console.log(`Worker returned status "${result.status}" for task "${nextTask.title}" (retry ${retries + 1}/3): ${result.error || 'Unknown error'}. Re-queuing...`);
                             await scrumMaster.requeueTask(nextTask);
                             await updateAgentStatus();
                             return;
