@@ -104,9 +104,6 @@ function callOpenAICompatible(apiUrl, apiKey, messages, model, maxTokens = 4096)
       timeout: 300000, // 300s
     };
 
-    // Increase body timeout for long generations
-    req.setTimeout(300000);
-
     // OpenRouter needs extra headers
     if (options.hostname.includes('openrouter')) {
       options.headers['HTTP-Referer'] = 'https://imlil.dev';
