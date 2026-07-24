@@ -328,13 +328,21 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
 
                     piscina.run({ task: nextTask, apiKey, config, dbPath }).then(async (result) => {
                         activeTasks.delete(nextTask.id);
+                        // Handle failed/timeout results from worker
+                        if (result.status !== 'completed') {
+                            console.log(`Worker returned status "${result.status}" for task "${nextTask.title}": ${result.error || 'Unknown error'}. Re-queuing...`);
+                            await scrumMaster.requeueTask(nextTask);
+                            await updateAgentStatus();
+                            return;
+                        }
                         validationQueue.push(result);
                         await updateAgentStatus();
                         handleValidation(); 
-                    }).catch(err => {
+                    }).catch(async (err) => {
                         console.error(`CRITICAL ERROR in Worker for task "${nextTask.title}": ${err.message}`);
                         activeTasks.delete(nextTask.id);
-                        updateAgentStatus();
+                        await scrumMaster.requeueTask(nextTask);
+                        await updateAgentStatus();
                     });
                 }
             } finally {
