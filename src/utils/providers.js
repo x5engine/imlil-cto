@@ -3,30 +3,23 @@
  * Supports: embedapi | openrouter | custom (OpenAI-compatible, e.g. DeepSeek B300)
  *
  * Provider is selected via IMLIL_PROVIDER env var.
- * Each provider has its own env var for the API key.
  *
- * Providers:
- *   embedapi  -> IMLIL_API_KEY (original EmbedAPI key)
- *   openrouter -> OPENROUTER_API_KEY + OPENROUTER_MODEL (default: openai/gpt-4o)
- *   custom     -> CUSTOM_API_KEY + CUSTOM_API_URL + CUSTOM_MODEL (for OpenAI-compatible endpoints)
- *
- * Also supports IMLIL_API_BASE_URL and IMLIL_MODEL as overrides for any provider.
+ * Key feature: Structured output via response_format / tools API —
+ * the model returns valid JSON natively, no regex needed.
  */
 
 import https from 'https';
 import http from 'http';
 import { URL } from 'url';
 
-// Default models per provider
 const DEFAULT_MODELS = {
   embedapi: 'claude-3-5-sonnet-20241022',
   openrouter: 'openai/gpt-4o',
-  custom: 'deepseek-chat',
+  custom: 'deepseek-v4-flash',
 };
 
 function getConfig() {
   const provider = (process.env.IMLIL_PROVIDER || 'embedapi').toLowerCase();
-
   let apiKey, apiUrl, model;
 
   switch (provider) {
@@ -43,7 +36,7 @@ function getConfig() {
     case 'embedapi':
     default:
       apiKey = process.env.IMLIL_API_KEY;
-      apiUrl = null; // embedapi uses its own SDK
+      apiUrl = null;
       model = process.env.IMLIL_MODEL || process.env.EMBEDAPI_MODEL || DEFAULT_MODELS.embedapi;
       break;
   }
@@ -52,43 +45,11 @@ function getConfig() {
 }
 
 /**
- * Check if a string looks like a streaming SSE response and return only the
- * data payloads concatenated.
+ * Make an HTTP(S) request to any OpenAI-compatible API.
  */
-function extractStreamData(raw) {
-  const lines = raw.split('\n');
-  const payloads = [];
-  for (const line of lines) {
-    if (line.startsWith('data: ')) {
-      const data = line.slice(6).trim();
-      if (data === '[DONE]') continue;
-      try {
-        const parsed = JSON.parse(data);
-        const content = parsed.choices?.[0]?.delta?.content || '';
-        if (content) payloads.push(content);
-      } catch {
-        // not JSON, skip
-      }
-    }
-  }
-  return payloads.join('');
-}
-
-/**
- * Call any OpenAI-compatible API via HTTP(S).
- * Returns the full response text.
- */
-function callOpenAICompatible(apiUrl, apiKey, messages, model, maxTokens = 4096) {
+function makeRequest(apiUrl, apiKey, body) {
   return new Promise((resolve, reject) => {
     const url = new URL(apiUrl);
-    const body = JSON.stringify({
-      model,
-      messages,
-      max_tokens: maxTokens,
-      temperature: 0.7,
-      stream: false,
-    });
-
     const isHttps = url.protocol === 'https:';
     const transport = isHttps ? https : http;
 
@@ -101,10 +62,9 @@ function callOpenAICompatible(apiUrl, apiKey, messages, model, maxTokens = 4096)
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      timeout: 300000, // 300s
+      timeout: 300000,
     };
 
-    // OpenRouter needs extra headers
     if (options.hostname.includes('openrouter')) {
       options.headers['HTTP-Referer'] = 'https://imlil.dev';
       options.headers['X-Title'] = 'imlil-cto';
@@ -118,91 +78,146 @@ function callOpenAICompatible(apiUrl, apiKey, messages, model, maxTokens = 4096)
           reject(new Error(`API error ${res.statusCode}: ${data.slice(0, 500)}`));
           return;
         }
-
         try {
-          const parsed = JSON.parse(data);
-          // Check for streaming response that wasn't streamed
-          if (parsed.choices?.[0]?.message?.content) {
-            resolve(parsed.choices[0].message.content);
-          } else if (parsed.choices?.[0]?.delta?.content) {
-            resolve(parsed.choices[0].delta.content);
-          } else if (parsed.data) {
-            // embedapi-style response
-            resolve(parsed.data);
-          } else {
-            reject(new Error(`Unexpected API response format: ${JSON.stringify(parsed).slice(0, 200)}`));
-          }
+          resolve(JSON.parse(data));
         } catch (e) {
-          // Maybe it's a streaming response that didn't parse cleanly
-          const extracted = extractStreamData(data);
-          if (extracted) {
-            resolve(extracted);
-          } else {
-            reject(new Error(`Failed to parse API response: ${e.message}\nResponse: ${data.slice(0, 500)}`));
-          }
+          reject(new Error(`Failed to parse response: ${e.message}`));
         }
       });
     });
 
     req.on('error', reject);
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('API request timed out after 120s'));
-    });
-
-    req.write(body);
+    req.on('timeout', () => { req.destroy(); reject(new Error('API request timed out')); });
+    req.write(JSON.stringify(body));
     req.end();
   });
 }
 
 /**
- * Main entry point: call any provider.
- * @param {string} prompt - The text prompt to send
- * @param {object} options
- * @param {string} [options.apiKey] - Override API key
- * @param {number} [options.maxTokens=4096] - Max tokens in response
- * @returns {Promise<string>} The response text
+ * Call the API with structured output (response_format=json_object).
+ * Guarantees valid JSON from models that support it.
  */
-export default async function callProvider(prompt, { apiKey, maxTokens = 4096 } = {}) {
+export async function callStructured(prompt, { apiKey, maxTokens = 4096 } = {}) {
   const config = getConfig();
-
-  // Use provided key or fall back to env-determined one
   const resolvedKey = apiKey || config.apiKey;
-
-  if (!resolvedKey) {
-    throw new Error(
-      `No API key found for provider "${config.provider}". ` +
-      `Set IMLIL_PROVIDER env var (embedapi|openrouter|custom) and the corresponding API key.`
-    );
-  }
-
-  const messages = [{ role: 'user', content: prompt }];
+  if (!resolvedKey) throw new Error(`No API key for provider "${config.provider}"`);
 
   switch (config.provider) {
     case 'openrouter':
-    case 'custom':
-      return callOpenAICompatible(config.apiUrl, resolvedKey, messages, config.model, maxTokens);
+    case 'custom': {
+      const body = {
+        model: config.model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: maxTokens,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+      };
+      const response = await makeRequest(config.apiUrl, resolvedKey, body);
+      const content = response?.choices?.[0]?.message?.content;
+      if (!content) throw new Error('Empty response from API');
+      return JSON.parse(content);
+    }
 
-    case 'embedapi':
-    default: {
-      // Use the original EmbedAPI SDK
+    case 'embedapi': {
       const { default: EmbedAPI } = await import('@embedapi/core');
-      const embedApi = new EmbedAPI(resolvedKey);
-      const response = await embedApi.generate({
+      const embed = new EmbedAPI(resolvedKey);
+      const resp = await embed.generate({
         service: 'anthropic',
         model: config.model,
-        messages,
+        messages: [{ role: 'user', content: prompt }],
         maxTokens,
         timeout: 120000,
       });
-      return response.data;
+      return resp.data;
     }
   }
 }
 
 /**
- * Get a human-readable description of the current provider config.
+ * Call the API with tool/function calling.
+ * Returns the tool_calls array from the response.
  */
+export async function callWithTools(messages, tools, { apiKey, maxTokens = 4096 } = {}) {
+  const config = getConfig();
+  const resolvedKey = apiKey || config.apiKey;
+  if (!resolvedKey) throw new Error(`No API key for provider "${config.provider}"`);
+
+  switch (config.provider) {
+    case 'openrouter':
+    case 'custom': {
+      const body = {
+        model: config.model,
+        messages,
+        tools,
+        tool_choice: 'auto',
+        max_tokens: maxTokens,
+        temperature: 0.2,
+      };
+      const response = await makeRequest(config.apiUrl, resolvedKey, body);
+      const msg = response?.choices?.[0]?.message;
+      return {
+        content: msg?.content || '',
+        toolCalls: msg?.tool_calls || [],
+      };
+    }
+
+    case 'embedapi':
+    default: {
+      // EmbedAPI doesn't support tools — fall back to structured output
+      const lastMsg = messages[messages.length - 1];
+      const json = await callStructured(lastMsg.content, { apiKey, maxTokens });
+      // Wrap in tool call format
+      return {
+        content: '',
+        toolCalls: [{
+          type: 'function',
+          function: {
+            name: json.action || 'writeFile',
+            arguments: JSON.stringify(json),
+          },
+        }],
+      };
+    }
+  }
+}
+
+/**
+ * Simple text completion (no structured output).
+ */
+export default async function callProvider(prompt, { apiKey, maxTokens = 4096 } = {}) {
+  const config = getConfig();
+  const resolvedKey = apiKey || config.apiKey;
+  if (!resolvedKey) throw new Error(`No API key for provider "${config.provider}"`);
+
+  switch (config.provider) {
+    case 'openrouter':
+    case 'custom': {
+      const body = {
+        model: config.model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: maxTokens,
+        temperature: 0.7,
+      };
+      const response = await makeRequest(config.apiUrl, resolvedKey, body);
+      return response?.choices?.[0]?.message?.content || '';
+    }
+
+    case 'embedapi':
+    default: {
+      const { default: EmbedAPI } = await import('@embedapi/core');
+      const embed = new EmbedAPI(resolvedKey);
+      const resp = await embed.generate({
+        service: 'anthropic',
+        model: config.model,
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens,
+        timeout: 120000,
+      });
+      return resp.data;
+    }
+  }
+}
+
 export function getProviderInfo() {
   const config = getConfig();
   return `${config.provider} / ${config.model}`;
