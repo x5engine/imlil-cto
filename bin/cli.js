@@ -355,33 +355,43 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                     await updateAgentStatus();
 
                     if (gpuOrch) {
-                        // GPU orchestrator handles batches
-                        const gpuResults = await gpuOrch.run([nextTask], apiKey, config);
-                        const result = gpuResults[0] || { status: 'failed', error: 'GPU returned no result' };
-                        activeTasks.delete(nextTask.id);
-                        if (result.status !== 'completed') {
-                            const retries = nextTask.retries || 0;
-                            if (retries >= 3) {
-                                console.log(`Task "${nextTask.title}" failed ${retries + 1} times. Marking as failed.`);
-                                const db = getDb();
-                                await db.run('UPDATE tasks SET status = ?, retries = ? WHERE id = ?', 'failed', retries + 1, nextTask.id);
-                                await updateAgentStatus();
-                                return;
+                        // GPU orchestrator — batch ALL pending tasks in one launch
+                        const pendingTasks = await db.all('SELECT * FROM tasks WHERE status = ?', 'pending');
+                        if (pendingTasks.length > 0) {
+                            console.log(`GPU: Batch launching ${pendingTasks.length} agents...`);
+                            for (const t of pendingTasks) {
+                                activeTasks.set(t.id, { ...t, currentActivity: 'GPU dispatch...' });
                             }
-                            console.log(`GPU Worker returned status "${result.status}" for task "${nextTask.title}" (retry ${retries + 1}/3): ${result.error || 'Unknown error'}. Re-queuing...`);
-                            await scrumMaster.requeueTask(nextTask);
                             await updateAgentStatus();
-                            return;
+                            
+                            const gpuResults = await gpuOrch.run(pendingTasks, apiKey, config);
+                            
+                            for (const result of gpuResults) {
+                                const task = pendingTasks.find(t => t.id === result.taskId);
+                                if (!task) continue;
+                                activeTasks.delete(task.id);
+                                if (result.status !== 'completed') {
+                                    const retries = task.retries || 0;
+                                    if (retries >= 3) {
+                                        console.log(`Task "${task.title}" failed ${retries + 1} times. Marking as failed.`);
+                                        await db.run('UPDATE tasks SET status = ?, retries = ? WHERE id = ?', 'failed', retries + 1, task.id);
+                                    } else {
+                                        console.log(`GPU: Task "${task.title}" failed (retry ${retries + 1}/3). Re-queuing...`);
+                                        await scrumMaster.requeueTask(task);
+                                    }
+                                } else {
+                                    validationQueue.push({
+                                        task: task,
+                                        testPath: result.filePath,
+                                        codePath: result.filePath,
+                                        status: result.status,
+                                        error: result.error
+                                    });
+                                    handleValidation();
+                                }
+                            }
+                            await updateAgentStatus();
                         }
-                        validationQueue.push({
-                            task: nextTask,
-                            testPath: result.filePath,
-                            codePath: result.filePath,
-                            status: result.status,
-                            error: result.error
-                        });
-                        await updateAgentStatus();
-                        handleValidation();
                     } else {
                     piscina.run({ task: nextTask, apiKey, config, dbPath }).then(async (result) => {
                         activeTasks.delete(nextTask.id);
