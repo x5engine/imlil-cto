@@ -1,5 +1,5 @@
-import { getDb } from '../db.js';
-import { xxh3 } from '../utils/hash.js';  // will create below
+import { getDb } from './db.js';
+import { xxh3 } from './hash.js';
 
 const CHUNK_TABLES = `
 CREATE TABLE IF NOT EXISTS chunk (

@@ -12,7 +12,7 @@
  *   - chokidar watch for live updates
  */
 
-import { getDb } from '../db.js';
+import { getDb } from './db.js';
 import { initVectorDb, insertChunk, insertVectors, hybridSearch, classifyQuery,
          checkFileState, upsertFileState, deleteChunksForPath, getUnembeddedChunks,
          getChunkCount } from './vectorDb.js';

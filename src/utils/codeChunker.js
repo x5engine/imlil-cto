@@ -11,7 +11,7 @@
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 // import TypeScript from 'tree-sitter-typescript'; // optional, adds weight
-import { hashText } from '../utils/hash.js';
+import { hashText } from './hash.js';
 
 const parser = new Parser();
 parser.setLanguage(JavaScript);
