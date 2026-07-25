@@ -16,7 +16,7 @@
  */
 
 import { getDb } from '../utils/db.js';
-import { callProvider } from '../utils/providers.js';
+import callProvider from '../utils/providers.js';
 import * as Tools from '../utils/tools.js';
 
 const MAX_TOOL_CALLS = 8; // Max tool calls per scout cycle
