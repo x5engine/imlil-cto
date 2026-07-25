@@ -117,7 +117,7 @@ export async function hybridSearch(queryEmbedding, ftsQuery, opts = {}) {
     const ft = await db.all(`
       SELECT c.id, c.path, c.symbol, c.text, c.lang, c.start_ln, rank
       FROM fts_chunk('${ftsQuery.replace(/'/g, "''")}')
-      JOIN chunk c ON c.id = fts_chunk.id
+      JOIN chunk c ON c.id = fts_chunk.rowid
       ORDER BY rank
       LIMIT ${k * 2}
     `);
