@@ -69,7 +69,7 @@ Only generate tasks that genuinely improve the project. Return empty array if no
       const added = [];
       for (const t of newTasks) {
         const id = `exp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const deps = [task.id];
+        const deps = [String(task.id)];
 
         await this.db.run(
           'INSERT INTO tasks (id, title, description, status, dependencies, retries) VALUES (?, ?, ?, ?, ?, ?)',
