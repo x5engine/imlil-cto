@@ -457,6 +457,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
             handleValidation();
         };
 
+    if (piscina) {
     piscina.on('message', (msg) => {
         if (msg && msg.type === 'log') {
             if (msg.level === 'error') {
@@ -472,6 +473,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
             }
         }
     });
+    }
 
     await processTasks();
     if (screen) screen.key(['escape', 'q', 'C-c'], () => process.exit(0));
