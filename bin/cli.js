@@ -19,6 +19,7 @@ import Piscina from 'piscina';
 import GpuOrchestrator, { GPU_EMERGENCY_STOP } from '../src/gpu/orchestrator.js';
 import ResumeAgent from '../src/agents/ResumeAgent.js';
 import ScoutAgent from '../src/agents/ScoutAgent.js';
+import ZombieKiller from '../src/agents/ZombieKiller.js';
 
 // --- API Key Management ---
 
@@ -263,6 +264,10 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
         scout.start(30000); // scan every 30s
         console.log(`  Scout Agent: watching for gaps (${config.maxAgents * 0.2 | 0} concurrent)`);
         
+        // Start ZombieKiller — black belt process hunter
+        const zombieKiller = new ZombieKiller();
+        zombieKiller.start();
+        
         let round = 0;
         const startTime = Date.now();
         let totalSucceeded = 0, totalFailed = 0;
@@ -359,6 +364,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
         }
         console.log(`╚═══════════════════════════════════`);
         scout.stop();
+        zombieKiller.stop();
         gpuOrch.destroy();
         process.exit(0);
         return;

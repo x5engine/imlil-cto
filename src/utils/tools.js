@@ -77,7 +77,7 @@ export async function read(targetPath, offset = 1, limit = 500) {
 /**
  * Search file contents using regex.
  * Like Cmd+Shift+F in VS Code, or @codebase in Cursor.
- * Fast because it uses the filesystem index.
+ * Uses ripgrep if available (10-100x faster), falls back to Node walk.
  */
 export async function search(pattern, searchPath = '.', { maxResults = 30, filePattern } = {}) {
   try {
@@ -87,6 +87,33 @@ export async function search(pattern, searchPath = '.', { maxResults = 30, fileP
       return { ok: false, error: `Not a directory: ${searchPath}` };
     }
     
+    // Try ripgrep first (blazing fast)
+    try {
+      const rgCmd = `rg -l -i "${pattern.replace(/"/g, '\\"')}" "${fullPath}" --glob '!node_modules/**' --glob '!.git/**' --glob '!.imlil/**' --glob '!.next/**' --glob '!dist/**' --glob '!build/**' --glob '!.cache/**' 2>/dev/null | head -${maxResults}`;
+      const files = execSync(rgCmd, { timeout: 10000, encoding: 'utf-8' }).trim().split('\n').filter(Boolean);
+      
+      if (files.length > 0) {
+        // Ripgrep worked! Now get line-level matches for each file
+        const results = [];
+        for (const file of files.slice(0, 20)) { // limit to 20 files for details
+          const grepCmd = `rg -n -i "${pattern.replace(/"/g, '\\"')}" "${file}" 2>/dev/null | head -5`;
+          try {
+            const lines = execSync(grepCmd, { timeout: 5000, encoding: 'utf-8' }).trim().split('\n').filter(Boolean);
+            for (const line of lines) {
+              const match = line.match(/^(\d+):(.+)$/);
+              if (match) {
+                results.push({ file: path.relative(fullPath, file), line: parseInt(match[1]), content: match[2].trim().slice(0, 200) });
+              }
+            }
+          } catch {}
+        }
+        return { ok: true, data: results.length > 0 ? results : files.map(f => ({ file: path.relative(fullPath, f), line: 0, content: '' })), count: results.length || files.length, pattern, engine: 'ripgrep' };
+      }
+    } catch {
+      // ripgrep not available, fall back to Node walk
+    }
+    
+    // Fallback: Node recursive walk (slower but always works)
     const results = [];
     const ignoreDirs = new Set(['node_modules', '.git', '.imlil', '.next', 'dist', 'build', '.cache', 'coverage', '.husky']);
     
