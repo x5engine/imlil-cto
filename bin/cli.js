@@ -18,6 +18,7 @@ import contrib from 'blessed-contrib';
 import Piscina from 'piscina';
 import GpuOrchestrator, { GPU_EMERGENCY_STOP } from '../src/gpu/orchestrator.js';
 import ResumeAgent from '../src/agents/ResumeAgent.js';
+import ScoutAgent from '../src/agents/ScoutAgent.js';
 
 // --- API Key Management ---
 
@@ -187,6 +188,8 @@ program
         const dbPath = path.join(process.cwd(), '.imlil', 'tasks.db');
 
         await initializeDatabase(dbPath);
+        // Store project description in config so Scout can reference it
+        config.projectDescription = project_description;
         const supervisor = new SupervisorAgent('Supervisor', 'Orchestrates the project', apiKey, config);
         if (options.resume || options.Continue) {
             const resumeAgent = new ResumeAgent('Resume', 'Continues existing project', apiKey, config);
@@ -249,8 +252,16 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
 
     if (gpuOrch) {
         // ═══ PURE GPU ORCHESTRATOR ═══
-        // Replaces the entire CPU scheduler with GPU batch loops
+        // Three concurrent pipelines:
+        //   Scout  (2K)  ──→ generates new tasks into DB
+        //   Executor (7K) ←── drains tasks from DB
+        //   QA (1K)       ←── validates output, feeds back failures
         console.log('GPU Mode: Pure parallel orchestration active.');
+        
+        // Start Scout agent in background — continuously generates new tasks
+        const scout = new ScoutAgent(apiKey, { ...config, projectDescription: project_description });
+        scout.start(30000); // scan every 30s
+        console.log(`  Scout Agent: watching for gaps (${config.maxAgents * 0.2 | 0} concurrent)`);
         
         let round = 0;
         const startTime = Date.now();
@@ -347,6 +358,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
             console.log(`║ GPU Clock:     ${snap.clockMhz || 'N/A'} MHz`);
         }
         console.log(`╚═══════════════════════════════════`);
+        scout.stop();
         gpuOrch.destroy();
         process.exit(0);
         return;
