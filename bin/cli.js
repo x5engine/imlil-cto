@@ -16,6 +16,7 @@ import inquirer from 'inquirer';
 import blessed from 'blessed';
 import contrib from 'blessed-contrib';
 import Piscina from 'piscina';
+import GpuOrchestrator from '../src/gpu/orchestrator.js';
 
 // --- API Key Management ---
 
@@ -73,6 +74,7 @@ program
     .option('--max-agents <num>', 'Set the maximum number of parallel agents.')
     .option('--provider <name>', 'Override provider (embedapi|openrouter|custom).')
     .option('--model <name>', 'Override model name for the active provider.')
+    .option('--gpu', 'Use GPU-accelerated agent execution (CUDA). Offloads orchestration to RTX 3070 Ti.')
     .action(async (project_description, options) => {
         if (options.provider) process.env.IMLIL_PROVIDER = options.provider;
         if (options.model) process.env.IMLIL_MODEL = options.model;
@@ -215,7 +217,30 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
     
     console.log('Orchestrator: Agent army, ATTENTION! MISSION START!');
 
-    const piscina = new Piscina({
+    const useGPU = !!(process.argv.includes('--gpu') || process.env.IMLIL_GPU === 'true');
+    
+    // Initialize GPU orchestrator if requested
+    let gpuOrch = null;
+    if (useGPU) {
+        gpuOrch = new GpuOrchestrator({
+            deviceIndex: 0,
+            maxAgents: config.maxAgents || 10000,
+            httpWorkers: 50,
+        });
+        const gpuReady = await gpuOrch.init();
+        if (!gpuReady) {
+            console.log('GPU init failed, falling back to CPU Piscina.');
+            gpuOrch = null;
+        } else {
+            const snap = gpuOrch.getSnapshot();
+            if (snap) {
+                console.log(`GPU Monitor: VRAM ${snap.vramUsedGB.toFixed(1)}/${snap.vramTotalGB.toFixed(1)} GB`);
+            }
+        }
+    }
+
+    // Piscina (CPU fallback)
+    const piscina = useGPU && gpuOrch ? null : new Piscina({
         filename: path.resolve(projectRoot, 'src/agents/worker.js'),
         minThreads: 1,
         maxThreads: config.maxAgents
@@ -329,6 +354,29 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                     activeTasks.set(nextTask.id, nextTask);
                     await updateAgentStatus();
 
+                    if (gpuOrch) {
+                        // GPU orchestrator handles batches
+                        const gpuResults = await gpuOrch.run([nextTask], apiKey, config);
+                        const result = gpuResults[0] || { status: 'failed', error: 'GPU returned no result' };
+                        activeTasks.delete(nextTask.id);
+                        if (result.status !== 'completed') {
+                            const retries = nextTask.retries || 0;
+                            if (retries >= 3) {
+                                console.log(`Task "${nextTask.title}" failed ${retries + 1} times. Marking as failed.`);
+                                const db = getDb();
+                                await db.run('UPDATE tasks SET status = ?, retries = ? WHERE id = ?', 'failed', retries + 1, nextTask.id);
+                                await updateAgentStatus();
+                                return;
+                            }
+                            console.log(`GPU Worker returned status "${result.status}" for task "${nextTask.title}" (retry ${retries + 1}/3): ${result.error || 'Unknown error'}. Re-queuing...`);
+                            await scrumMaster.requeueTask(nextTask);
+                            await updateAgentStatus();
+                            return;
+                        }
+                        validationQueue.push(result);
+                        await updateAgentStatus();
+                        handleValidation();
+                    } else {
                     piscina.run({ task: nextTask, apiKey, config, dbPath }).then(async (result) => {
                         activeTasks.delete(nextTask.id);
                         // Handle failed/timeout results from worker
@@ -365,7 +413,8 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                             await scrumMaster.requeueTask(nextTask);
                         }
                         await updateAgentStatus();
-                    });
+                    }); // end piscina.catch
+                    } // end else (GPU not active)
                 }
             } finally {
                 isProcessing = false;
