@@ -30,15 +30,31 @@ CREATE TABLE IF NOT EXISTS vector (
   FOREIGN KEY (chunk_id) REFERENCES chunk(id) ON DELETE CASCADE
 );
 
--- FTS5 for keyword search
+-- keyword side (identifiers, exact symbols)
 DROP TABLE IF EXISTS fts_chunk;
-CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunk USING fts5(
+CREATE VIRTUAL TABLE fts_chunk USING fts5(
   text, symbol, path,
   content='chunk',
   content_rowid='id',
   tokenize='unicode61 remove_diacritics 2'
 );
 `;
+
+// ─── Rebuild FTS5 index from chunk table ───
+export async function rebuildFts() {
+  const db = getDb();
+  await db.run("INSERT INTO fts_chunk(fts_chunk) VALUES('rebuild')");
+}
+
+// ─── Sync FTS5 for a single chunk ───
+export async function syncFtsForChunk(id) {
+  const db = getDb();
+  await db.run(
+    `INSERT INTO fts_chunk(rowid, text, symbol, path)
+     SELECT id, text, symbol, path FROM chunk WHERE id = ?`,
+    id
+  );
+}
 
 // ─── Schema Init ───
 export async function initVectorDb() {

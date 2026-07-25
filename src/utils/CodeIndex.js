@@ -15,7 +15,7 @@
 import { getDb } from './db.js';
 import { initVectorDb, insertChunk, insertVectors, hybridSearch, classifyQuery,
          checkFileState, upsertFileState, deleteChunksForPath, getUnembeddedChunks,
-         getChunkCount } from './vectorDb.js';
+         getChunkCount, rebuildFts, syncFtsForChunk } from './vectorDb.js';
 import { chunkFile, scanProject } from './codeChunker.js';
 import { embed, healthCheck } from './embed.js';
 
@@ -78,6 +78,9 @@ class CodeIndex {
     // Embed unembedded
     await this.embedPending();
 
+    // Rebuild FTS5 index
+    await rebuildFts();
+
     this.totalChunks = await getChunkCount();
     console.log(`📚 CodeIndex: ${this.totalChunks} chunks, ${this.totalEmbedded} embedded`);
     return this;
@@ -110,7 +113,10 @@ class CodeIndex {
         const chunks = chunkFile(f.path, code);
         for (const chunk of chunks) {
           const row = await insertChunk(chunk);
-          if (row) newChunks++;
+          if (row) {
+            newChunks++;
+            await syncFtsForChunk(row.id);  // sync FTS5 for new chunk
+          }
         }
         await upsertFileState(f.path, f.mtime, f.size, null);
       } catch {}
