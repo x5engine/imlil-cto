@@ -373,7 +373,13 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                             await updateAgentStatus();
                             return;
                         }
-                        validationQueue.push(result);
+                        validationQueue.push({
+                            task: nextTask,
+                            testPath: result.filePath,
+                            codePath: result.filePath,
+                            status: result.status,
+                            error: result.error
+                        });
                         await updateAgentStatus();
                         handleValidation();
                     } else {
