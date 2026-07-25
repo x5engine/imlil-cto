@@ -259,7 +259,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
         console.log('GPU Mode: Pure parallel orchestration active.');
         
         // Start Scout agent in background — continuously generates new tasks
-        const scout = new ScoutAgent(apiKey, { ...config, projectDescription: project_description });
+        const scout = new ScoutAgent(apiKey, { ...config, projectDescription: config.projectDescription });
         scout.start(30000); // scan every 30s
         console.log(`  Scout Agent: watching for gaps (${config.maxAgents * 0.2 | 0} concurrent)`);
         
