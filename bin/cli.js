@@ -239,8 +239,88 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
         }
     }
 
+    if (gpuOrch) {
+        // ═══ PURE GPU ORCHESTRATOR ═══
+        // Replaces the entire CPU scheduler with GPU batch loops
+        console.log('GPU Mode: Pure parallel orchestration active.');
+        
+        let round = 0;
+        while (true) {
+            // Get ALL pending tasks
+            const pendingTasks = await db.all('SELECT * FROM tasks WHERE status = ? ORDER BY id ASC', 'pending');
+            
+            if (pendingTasks.length === 0) {
+                // Check if there are running tasks (tasks that got stuck in 'running' state)
+                const runningCount = (await db.all('SELECT count(*) as c FROM tasks WHERE status = ?', 'running'))[0].c;
+                if (runningCount === 0 && round > 0) {
+                    // No pending, no running — mission complete
+                    console.log(`\nGPU: All ${round} rounds complete. ${pendingTasks.length} pending, ${runningCount} running.`);
+                    break;
+                }
+                // Wait and check for new expansion tasks
+                await new Promise(r => setTimeout(r, 500));
+                continue;
+            }
+            
+            round++;
+            console.log(`\n🚀 GPU Round ${round}: ${pendingTasks.length} tasks`);
+            
+            // Mark all as running in UI
+            for (const t of pendingTasks) {
+                t.currentActivity = `GPU Round ${round}`;
+            }
+            
+            // Launch ALL pending tasks in one GPU batch call
+            const gpuResults = await gpuOrch.run(pendingTasks, apiKey, config);
+            
+            // Process results
+            const completed = [];
+            for (const result of gpuResults) {
+                if (result.status === 'completed') {
+                    completed.push(result);
+                } else {
+                    const task = pendingTasks.find(t => t.id === result.taskId);
+                    if (task) {
+                        const retries = (await db.all('SELECT retries FROM tasks WHERE id = ?', task.id))[0]?.retries || 0;
+                        if (retries >= 3) {
+                            await db.run('UPDATE tasks SET status = ? WHERE id = ?', 'failed', task.id);
+                        } else {
+                            await db.run('UPDATE tasks SET retries = ?, status = ? WHERE id = ?', retries + 1, 'pending', task.id);
+                        }
+                    }
+                }
+            }
+            
+            console.log(`GPU Round ${round} done: ${completed.length}/${gpuResults.length} succeeded`);
+            
+            // Quick validation — mark completed tasks
+            for (const result of completed) {
+                const task = pendingTasks.find(t => t.id === result.taskId);
+                if (task) {
+                    await db.run('UPDATE tasks SET status = ? WHERE id = ?', 'completed', task.id);
+                    await expansionPlanner.expandFrom(task, result.filePath, result.filePath);
+                }
+            }
+            
+            // Safety check
+            const safety = gpuOrch.getSafety();
+            if (safety === GPU_EMERGENCY_STOP) {
+                console.error('GPU EMERGENCY STOP — aborting.');
+                break;
+            }
+        }
+        
+        console.log('\nGPU MISSION COMPLETE!');
+        const snap = gpuOrch.getSnapshot();
+        if (snap) console.log(`Final VRAM: ${snap.vramUsedGB.toFixed(1)}/${snap.vramTotalGB.toFixed(1)} GB`);
+        gpuOrch.destroy();
+        process.exit(0);
+        return;
+    }
+    
+    // ═══ CPU PISCINA ORCHESTRATOR (existing) ═══
     // Piscina (CPU fallback)
-    const piscina = useGPU && gpuOrch ? null : new Piscina({
+    const piscina = new Piscina({
         filename: path.resolve(projectRoot, 'src/agents/worker.js'),
         minThreads: 1,
         maxThreads: config.maxAgents
@@ -354,45 +434,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                     activeTasks.set(nextTask.id, nextTask);
                     await updateAgentStatus();
 
-                    if (gpuOrch) {
-                        // GPU orchestrator — batch ALL pending tasks in one launch
-                        const pendingTasks = await db.all('SELECT * FROM tasks WHERE status = ?', 'pending');
-                        if (pendingTasks.length > 0) {
-                            console.log(`GPU: Batch launching ${pendingTasks.length} agents...`);
-                            for (const t of pendingTasks) {
-                                activeTasks.set(t.id, { ...t, currentActivity: 'GPU dispatch...' });
-                            }
-                            await updateAgentStatus();
-                            
-                            const gpuResults = await gpuOrch.run(pendingTasks, apiKey, config);
-                            
-                            for (const result of gpuResults) {
-                                const task = pendingTasks.find(t => t.id === result.taskId);
-                                if (!task) continue;
-                                activeTasks.delete(task.id);
-                                if (result.status !== 'completed') {
-                                    const retries = task.retries || 0;
-                                    if (retries >= 3) {
-                                        console.log(`Task "${task.title}" failed ${retries + 1} times. Marking as failed.`);
-                                        await db.run('UPDATE tasks SET status = ?, retries = ? WHERE id = ?', 'failed', retries + 1, task.id);
-                                    } else {
-                                        console.log(`GPU: Task "${task.title}" failed (retry ${retries + 1}/3). Re-queuing...`);
-                                        await scrumMaster.requeueTask(task);
-                                    }
-                                } else {
-                                    validationQueue.push({
-                                        task: task,
-                                        testPath: result.filePath,
-                                        codePath: result.filePath,
-                                        status: result.status,
-                                        error: result.error
-                                    });
-                                    handleValidation();
-                                }
-                            }
-                            await updateAgentStatus();
-                        }
-                    } else {
+                    // CPU Piscina path
                     piscina.run({ task: nextTask, apiKey, config, dbPath }).then(async (result) => {
                         activeTasks.delete(nextTask.id);
                         // Handle failed/timeout results from worker
@@ -430,7 +472,6 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                         }
                         await updateAgentStatus();
                     }); // end piscina.catch
-                    } // end else (GPU not active)
                 }
             } finally {
                 isProcessing = false;
