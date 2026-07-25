@@ -100,6 +100,12 @@ TOOLS AVAILABLE:
 - stat(path)                → File metadata
 - run(command)              → Execute shell command (test, lint, etc.)
 
+Call a tool by writing: toolName(arg1, arg2)
+For example: listDir(".", 2)
+
+After exploring, return ONLY a JSON object (no markdown, no explanation):
+{ "tasks": [{ "title": "...", "description": "...", "dependencies": [] }] }
+
 STRATEGY:
 1. First call listDir(".") to see the project structure
 2. Read key files that seem important or incomplete
@@ -170,10 +176,14 @@ IMPORTANT:
       
       const content = response.trim();
       
-      // Check if response is JSON
-      if (content.startsWith('{') || content.startsWith('[')) {
+      // Check if response is JSON (handle markdown-wrapped)
+      let jsonStr = content.trim();
+      if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.replace(/```(?:json)?\n?/g, '').trim();
+      }
+      if (jsonStr.startsWith('{') || jsonStr.startsWith('[')) {
         try {
-          const parsed = JSON.parse(content);
+          const parsed = JSON.parse(jsonStr);
           const tasks = parsed.tasks || parsed;
           return { tasks: Array.isArray(tasks) ? tasks : [] };
         } catch {
