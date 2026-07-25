@@ -53,7 +53,7 @@ class ScoutAgent {
    */
   start(intervalMs = 30000) {
     console.log(`Scout: Starting continuous task generation (every ${intervalMs/1000}s)`);
-    // Do an immediate first scan
+    // Do an immediate first scan — fire and forget
     this.scan().catch(e => console.error(`Scout: First scan failed: ${e.message}`));
     this.scanInterval = setInterval(() => this.scan().catch(e => {}), intervalMs);
   }
@@ -76,6 +76,7 @@ class ScoutAgent {
     try {
       // 1. Quick file count check — skip if not much changed
       const currentCount = await this.countFiles();
+      console.error(`Scout: Scan cycle — files=${currentCount}, lastFileCount=${this.lastFileCount}, lastScan=${this.lastScanTime}`);
       if (this.lastScanTime === 0) {
         // First scan — always do it
       } else if (currentCount === this.lastFileCount && Date.now() - this.lastScanTime < 60000) {
