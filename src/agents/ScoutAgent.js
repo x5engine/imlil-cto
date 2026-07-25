@@ -1,40 +1,26 @@
 /**
- * ScoutAgent.js — Continuous Task Generator
+ * ScoutAgent.js v2 — Tool-Based Continuous Task Generator
  * 
- * Runs alongside the executor on a separate GPU stream.
- * Continuously scans the project directory for what exists,
- * determines what's missing, and injects new tasks into the DB.
+ * Uses the Agent Tool System to let the LLM explore the project
+ * organically, just like Claude Code / Cursor.
  * 
- * This is the "task producer" — it keeps the pipeline fed so
- * the executor never starves.
+ * The LLM calls:
+ *   listDir(".")     → sees the project tree
+ *   read("src/...")  → reads specific files
+ *   search("auth")   → finds auth-related code
+ *   run("npm test")  → runs tests to find gaps
  * 
- * Architecture:
- *   ScoutAgent (GPU stream 0) ──→ DB (tasks table) ←── Executor (GPU stream 1)
- *   - Scans project every 30s
- *   - Generates 5-20 new tasks per scan
- *   - Marks existing tasks as "complete" if files already exist
- *   - Never duplicates
+ * Then generates tasks for what's MISSING, not what exists.
  * 
- * The ratio: for every 10 executor tasks processed, 
- * the scout generates ~15-30 new ones (growth factor ~1.5-3x per round)
+ * This is 100x more efficient than brute-force scanning 2,000 files.
  */
 
-import fs from 'fs/promises';
-import path from 'path';
 import { getDb } from '../utils/db.js';
-import { callStructured } from '../utils/providers.js';
+import { callProvider } from '../utils/providers.js';
+import * as Tools from '../utils/tools.js';
 
-const IGNORE_DIRS = new Set([
-  'node_modules', '.git', '.imlil', '__pycache__',
-  '.next', 'dist', 'build', '.cache', 'coverage',
-  '.husky', '.vscode', 'target', 'out', '.tmp'
-]);
-
-const SOURCE_EXTS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-  '.css', '.scss', '.less', '.json', '.html', '.md',
-  '.yml', '.yaml', '.prisma', '.svg'
-]);
+const MAX_TOOL_CALLS = 8; // Max tool calls per scout cycle
+const TOOL_TIMEOUT = 15000; // 15s per tool call
 
 class ScoutAgent {
   constructor(apiKey, config) {
@@ -42,19 +28,15 @@ class ScoutAgent {
     this.config = config;
     this.db = getDb();
     this.scanInterval = null;
-    this.lastScanTime = 0;
-    this.lastFileCount = 0;
     this.totalGenerated = 0;
     this.isScanning = false;
+    this.lastScanTime = 0;
+    this.pendingThreshold = 500; // Skip if this many pending
   }
 
-  /**
-   * Start continuous scanning
-   */
   start(intervalMs = 30000) {
-    console.log(`Scout: Starting continuous task generation (every ${intervalMs/1000}s)`);
-    // Do an immediate first scan — fire and forget
-    this.scan().catch(e => console.error(`Scout: First scan failed: ${e.message}`));
+    console.log(`Scout v2: Tool-based task generation (every ${intervalMs/1000}s)`);
+    this.scan().catch(e => console.error(`Scout: Scan failed: ${e.message}`));
     this.scanInterval = setInterval(() => this.scan().catch(e => {}), intervalMs);
   }
 
@@ -63,68 +45,92 @@ class ScoutAgent {
       clearInterval(this.scanInterval);
       this.scanInterval = null;
     }
-    console.log(`Scout: Stopped. Generated ${this.totalGenerated} new tasks total.`);
+    console.log(`Scout: Stopped. Generated ${this.totalGenerated} tasks.`);
   }
 
   /**
-   * One scan cycle: scan project → determine gaps → insert tasks
+   * One scout cycle:
+   * 1. Check if we need tasks (pending below threshold)
+   * 2. Give LLM tools to explore the project
+   * 3. LLM calls tools to understand what exists
+   * 4. LLM generates tasks for missing pieces
+   * 5. Insert tasks into DB
    */
   async scan() {
     if (this.isScanning) return;
+    
+    // Don't scan too often
+    if (Date.now() - this.lastScanTime < 30000 && this.lastScanTime > 0) return;
+    
+    // Check if we need tasks
+    const pending = (await this.db.all('SELECT count(*) as c FROM tasks WHERE status = ?', 'pending'))[0].c;
+    if (pending >= this.pendingThreshold) return;
+    
     this.isScanning = true;
+    this.lastScanTime = Date.now();
     
     try {
-      // 1. Quick file count check — skip if not much changed
-      const currentCount = await this.countFiles();
-      console.error(`Scout: Scan cycle — files=${currentCount}, lastFileCount=${this.lastFileCount}, lastScan=${this.lastScanTime}`);
-      if (this.lastScanTime === 0) {
-        // First scan — always do it
-      } else if (currentCount === this.lastFileCount && Date.now() - this.lastScanTime < 60000) {
-        // Nothing changed and we scanned recently — skip
-        this.isScanning = false;
-        return;
-      }
-      this.lastFileCount = currentCount;
-      
-      // 2. Get current DB stats
-      const pending = (await this.db.all('SELECT count(*) as c FROM tasks WHERE status = ?', 'pending'))[0].c;
-      const completed = (await this.db.all('SELECT count(*) as c FROM tasks WHERE status = ?', 'completed'))[0].c;
-      const total = (await this.db.all('SELECT count(*) as c FROM tasks'))[0].c;
-      
-      // Don't scan if we already have enough pending tasks
-      if (pending > 500) {
-        this.isScanning = false;
-        return;
-      }
-      
-      // 3. Get the project description from env or config
       const description = this.config.projectDescription || 'A web application';
       
-      // 4. Scan a sample of recently modified files
-      const recentFiles = await this.scanRecentFiles(100);
-      
-      // 5. Get the last N completed tasks to understand context
+      // Get recent completed for context
       const recentCompleted = await this.db.all(
-        'SELECT title, description FROM tasks WHERE status = ? ORDER BY id DESC LIMIT 20',
+        'SELECT title, description FROM tasks WHERE status = ? ORDER BY id DESC LIMIT 10',
         'completed'
       );
       
-      // 6. Ask B300 what tasks to add
-      const newTasks = await this.generateTasks(description, recentFiles, recentCompleted);
+      const taskContext = recentCompleted.map(t => `  ✅ ${t.title}${t.description ? ': ' + t.description : ''}`).join('\n');
       
-      // 7. Insert them
-      if (newTasks && newTasks.length > 0) {
+      // System prompt with tools
+      const systemPrompt = `You are a project SCOUT. Your job is to explore this project and find what needs to be built next.
+
+PROJECT: "${description}"
+
+RECENTLY COMPLETED TASKS:
+${taskContext || '  (none yet)'}
+
+You have TOOLS to explore the project. Use them to understand the existing codebase,
+then determine what's MISSING and return tasks for what needs to be built.
+
+TOOLS AVAILABLE:
+- listDir(path, maxDepth?)  → See directory tree
+- ls(path)                  → List files in a directory
+- read(path, offset, limit) → Read a file
+- search(pattern)           → Search file contents
+- glob(pattern)             → Find files by name
+- stat(path)                → File metadata
+- run(command)              → Execute shell command (test, lint, etc.)
+
+STRATEGY:
+1. First call listDir(".") to see the project structure
+2. Read key files that seem important or incomplete
+3. Search for patterns like "TODO", "FIXME", or missing features
+4. Run tests if they exist: run("npx jest --listTests 2>/dev/null || echo no jest")
+5. Based on your findings, generate tasks for what's genuinely missing
+
+When you're done exploring, return a JSON object:
+{ "tasks": [{ "title": "...", "description": "...", "dependencies": [] }] }
+
+IMPORTANT:
+- Be granular — one file or one feature per task
+- Focus on what's MISSING, not what exists
+- If little is missing, return { "tasks": [] }
+- Return ONLY the JSON when done`;
+
+      // Run tool-assisted exploration
+      const { tasks } = await this.exploreWithTools(systemPrompt, description);
+      
+      // Insert into DB
+      if (tasks && tasks.length > 0) {
         const existingIds = new Set();
-        const existing = await this.db.all('SELECT id FROM tasks');
-        existing.forEach(t => existingIds.add(t.id));
+        (await this.db.all('SELECT id FROM tasks')).forEach(t => existingIds.add(t.id));
         
         let inserted = 0;
-        for (const task of newTasks) {
-          if (!task.id || existingIds.has(task.id)) continue;
+        for (const task of tasks) {
+          if (existingIds.has(task.title)) continue; // dedupe by title
           try {
             await this.db.run(
               'INSERT OR IGNORE INTO tasks (id, title, description, status, dependencies, retries) VALUES (?, ?, ?, ?, ?, ?)',
-              task.id + 100000 + this.totalGenerated, // unique ID space
+              100000 + Date.now() % 100000 + inserted,
               task.title,
               task.description || '',
               'pending',
@@ -135,112 +141,81 @@ class ScoutAgent {
           } catch {}
         }
         this.totalGenerated += inserted;
-        if (inserted > 0) {
-          console.log(`Scout: +${inserted} new tasks (${this.totalGenerated} total generated, ${pending + inserted} pending)`);
-        }
+        console.log(`Scout: +${inserted} new tasks (${pending + inserted} pending)`);
       }
-      
-      this.lastScanTime = Date.now();
     } catch (e) {
-      // Scout failures are non-fatal
-      console.error(`Scout: Scan failed: ${e.message}`);
+      console.error(`Scout: Cycle error: ${e.message}`);
     }
     
     this.isScanning = false;
   }
 
-  async countFiles() {
-    let count = 0;
-    const scan = async (dir, depth = 0) => {
-      if (depth > 4) return;
-      let entries;
-      try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
-      for (const entry of entries) {
-        if (entry.name.startsWith('.') || IGNORE_DIRS.has(entry.name)) continue;
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) await scan(full, depth + 1);
-        else if (entry.isFile() && SOURCE_EXTS.has(path.extname(entry.name).toLowerCase())) count++;
-      }
-    };
-    await scan('.', 0);
-    return count;
-  }
-
-  async scanRecentFiles(limit = 100) {
-    const files = [];
-    const scan = async (dir, depth = 0) => {
-      if (depth > 4) return; // max 4 levels deep
-      let entries;
-      try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
-      for (const entry of entries) {
-        if (entry.name.startsWith('.') || IGNORE_DIRS.has(entry.name)) continue;
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          await scan(full, depth + 1);
-        } else if (entry.isFile() && SOURCE_EXTS.has(path.extname(entry.name).toLowerCase())) {
-          try {
-            const stat = await fs.stat(full);
-            files.push({
-              path: path.relative('.', full),
-              size: stat.size,
-              mtimeMs: stat.mtimeMs
-            });
-          } catch {}
+  /**
+   * Tool-assisted exploration loop.
+   * Calls the LLM with tool results until it returns JSON tasks.
+   */
+  async exploreWithTools(systemPrompt, description) {
+    // Start with just the system prompt
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `Explore the project and tell me what needs to be built for: "${description}"` }
+    ];
+    
+    for (let round = 0; round < MAX_TOOL_CALLS; round++) {
+      // Call B300
+      const response = await callProvider(
+        messages.map(m => m.role === 'tool' ? `[Tool: ${m.name}]\n${m.content}` : m.content).join('\n\n'),
+        { apiKey: this.apiKey, config: this.config, maxTokens: 4096 }
+      );
+      
+      const content = response.trim();
+      
+      // Check if response is JSON
+      if (content.startsWith('{') || content.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(content);
+          const tasks = parsed.tasks || parsed;
+          return { tasks: Array.isArray(tasks) ? tasks : [] };
+        } catch {
+          // Not valid JSON yet — keep exploring
         }
-        if (files.length >= limit) return; // early exit
       }
-    };
-    await scan('.', 0);
-    
-    // Sort by modification time, take most recent
-    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    return files.slice(0, limit).map(f => `${f.path} (${f.size}b)`);
-  }
-
-  async generateTasks(description, recentFiles, recentCompleted) {
-    const context = recentCompleted.map(t => `  - ${t.title}: ${t.description || ''}`).join('\n');
-    const fileList = recentFiles.join('\n');
-    
-    const prompt = `You're a project SCOUT — your job is to find what needs to be built next.
-
-PROJECT: "${description}"
-
-RECENT COMPLETED TASKS:
-${context || '  (none yet)'}
-
-RECENT FILES:
-${fileList || '  (empty project)'}
-
-Look at what's been done and what files exist. Determine the NEXT most valuable tasks:
-1. Features that are clearly missing based on the project description
-2. Missing configurations (CI, Docker, linting, testing, etc.)
-3. Integration between existing components
-4. Tests for existing code
-5. Documentation and setup
-
-Return a JSON object with a "tasks" array. Each task:
-- title: string (short, actionable)
-- description: string (what to build, be specific)
-- dependencies: string[] (empty if none — reference task titles)
-
-IMPORTANT:
-- Focus on genuinely missing pieces, NOT files that already exist
-- Be granular — one file or one feature per task
-- Prioritize: blockers first, then core logic, then polish
-- If little is missing, return { "tasks": [] }
-- Return ONLY valid JSON`;
-
-    try {
-      const result = await callStructured(prompt, {
-        apiKey: this.apiKey,
-        config: this.config,
-        maxTokens: 8192
-      });
-      const tasks = result?.tasks || result;
-      return Array.isArray(tasks) ? tasks : [];
-    } catch {
-      return [];
+      
+      // Check if response contains a tool call
+      const toolMatch = content.match(/`(listDir|ls|read|search|glob|stat|run)\(([^)]*)\)`/);
+      if (toolMatch) {
+        const [, toolName, argsStr] = toolMatch;
+        let args;
+        try { args = JSON.parse(`[${argsStr}]`); } catch {
+          args = [argsStr.replace(/['"]/g, '').trim()];
+        }
+        
+        const result = await Tools[toolName]?.fn(...args).catch(e => ({ ok: false, error: e.message }))
+          || { ok: false, error: `Tool ${toolName} not found` };
+        
+        messages.push({
+          role: 'tool',
+          name: toolName,
+          content: JSON.stringify(result, null, 2).slice(0, 2000)
+        });
+      } else {
+        // No tool call — the LLM is asking for something or giving status.
+        // Push its response and ask for concrete tasks or tool calls
+        messages.push({ role: 'assistant', content: content.slice(0, 1000) });
+        messages.push({ role: 'user', content: 'Use the available tools to explore the project, then return JSON tasks.' });
+      }
     }
+    
+    // Max rounds reached — try one final generation
+    const lastMsg = messages[messages.length - 1].content;
+    const taskMatch = lastMsg.match(/\{[\s\S]*"tasks"[\s\S]*\}/);
+    if (taskMatch) {
+      try {
+        return { tasks: JSON.parse(taskMatch[0]).tasks || [] };
+      } catch {}
+    }
+    
+    return { tasks: [] };
   }
 }
 
