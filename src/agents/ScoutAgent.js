@@ -76,7 +76,9 @@ class ScoutAgent {
     try {
       // 1. Quick file count check — skip if not much changed
       const currentCount = await this.countFiles();
-      if (currentCount === this.lastFileCount && Date.now() - this.lastScanTime < 120000) {
+      if (this.lastScanTime === 0) {
+        // First scan — always do it
+      } else if (currentCount === this.lastFileCount && Date.now() - this.lastScanTime < 60000) {
         // Nothing changed and we scanned recently — skip
         this.isScanning = false;
         return;
