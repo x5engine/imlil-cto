@@ -164,7 +164,7 @@ class CodeIndex {
       const ft = await db.all(`
         SELECT c.id, c.path, c.symbol, c.text, c.lang, c.start_ln
         FROM fts_chunk('${query.replace(/'/g, "''")}')
-        JOIN chunk c ON c.id = fts_chunk.id
+        JOIN chunk c ON c.id = fts_chunk.rowid
         ORDER BY rank
         LIMIT ${topK}
       `);
