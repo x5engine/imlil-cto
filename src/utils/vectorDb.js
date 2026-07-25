@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS vector (
 );
 
 -- FTS5 for keyword search
+DROP TABLE IF EXISTS fts_chunk;
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunk USING fts5(
   text, symbol, path,
   content='chunk',
