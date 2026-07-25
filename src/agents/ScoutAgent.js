@@ -149,30 +149,32 @@ class ScoutAgent {
 
   async countFiles() {
     let count = 0;
-    const scan = async (dir) => {
+    const scan = async (dir, depth = 0) => {
+      if (depth > 4) return;
       let entries;
       try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
         if (entry.name.startsWith('.') || IGNORE_DIRS.has(entry.name)) continue;
         const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) await scan(full);
+        if (entry.isDirectory()) await scan(full, depth + 1);
         else if (entry.isFile() && SOURCE_EXTS.has(path.extname(entry.name).toLowerCase())) count++;
       }
     };
-    await scan('.');
+    await scan('.', 0);
     return count;
   }
 
   async scanRecentFiles(limit = 100) {
     const files = [];
-    const scan = async (dir) => {
+    const scan = async (dir, depth = 0) => {
+      if (depth > 4) return; // max 4 levels deep
       let entries;
       try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
         if (entry.name.startsWith('.') || IGNORE_DIRS.has(entry.name)) continue;
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
-          await scan(full);
+          await scan(full, depth + 1);
         } else if (entry.isFile() && SOURCE_EXTS.has(path.extname(entry.name).toLowerCase())) {
           try {
             const stat = await fs.stat(full);
@@ -183,9 +185,10 @@ class ScoutAgent {
             });
           } catch {}
         }
+        if (files.length >= limit) return; // early exit
       }
     };
-    await scan('.');
+    await scan('.', 0);
     
     // Sort by modification time, take most recent
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
