@@ -17,6 +17,7 @@ import blessed from 'blessed';
 import contrib from 'blessed-contrib';
 import Piscina from 'piscina';
 import GpuOrchestrator, { GPU_EMERGENCY_STOP } from '../src/gpu/orchestrator.js';
+import ResumeAgent from '../src/agents/ResumeAgent.js';
 
 // --- API Key Management ---
 
@@ -75,6 +76,8 @@ program
     .option('--provider <name>', 'Override provider (embedapi|openrouter|custom).')
     .option('--model <name>', 'Override model name for the active provider.')
     .option('--gpu', 'Use GPU-accelerated agent execution (CUDA). Offloads orchestration to RTX 3070 Ti.')
+    .option('--resume', 'Continue existing project (scan files, generate only missing tasks).')
+    .option('--continue', 'Alias for --resume.')
     .action(async (project_description, options) => {
         if (options.provider) process.env.IMLIL_PROVIDER = options.provider;
         if (options.model) process.env.IMLIL_MODEL = options.model;
@@ -185,7 +188,12 @@ program
 
         await initializeDatabase(dbPath);
         const supervisor = new SupervisorAgent('Supervisor', 'Orchestrates the project', apiKey, config);
-        await supervisor.run(project_description);
+        if (options.resume || options.Continue) {
+            const resumeAgent = new ResumeAgent('Resume', 'Continues existing project', apiKey, config);
+            await resumeAgent.run(project_description);
+        } else {
+            await supervisor.run(project_description);
+        }
         
         clearTimeout(timeoutId);
         
