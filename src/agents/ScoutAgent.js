@@ -142,6 +142,7 @@ class ScoutAgent {
       this.lastScanTime = Date.now();
     } catch (e) {
       // Scout failures are non-fatal
+      console.error(`Scout: Scan failed: ${e.message}`);
     }
     
     this.isScanning = false;
