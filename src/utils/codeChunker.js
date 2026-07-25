@@ -227,7 +227,7 @@ export async function scanProject(projectRoot, { vectorDb, gitDiff = false } = {
         const relPath = path.relative(projectRoot, full);
         const state = vectorDb
           ? await vectorDb.checkFileState(relPath, stat.mtimeMs, stat.size)
-          : 'unknown';
+          : 'new';  // no DB to check → assume new
         if (state === 'new' || state === 'changed') {
           changedFiles.push({ path: relPath, mtime: stat.mtimeMs, size: stat.size });
         }
