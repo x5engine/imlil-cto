@@ -293,14 +293,19 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
             
             console.log(`GPU Round ${round} done: ${completed.length}/${gpuResults.length} succeeded`);
             
-            // Quick validation — mark completed tasks
+            // Quick validation — mark completed tasks (fire-and-forget expansions in parallel)
+            const expansionPromises = [];
             for (const result of completed) {
                 const task = pendingTasks.find(t => t.id === result.taskId);
                 if (task) {
                     await db.run('UPDATE tasks SET status = ? WHERE id = ?', 'completed', task.id);
-                    await expansionPlanner.expandFrom(task, result.filePath, result.filePath);
+                    expansionPromises.push(
+                        expansionPlanner.expandFrom(task, result.filePath, result.filePath)
+                            .catch(e => null) // ignore expansion failures
+                    );
                 }
             }
+            await Promise.all(expansionPromises);
             
             // Safety check
             const safety = gpuOrch.getSafety();
