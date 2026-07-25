@@ -139,7 +139,8 @@ int main() {
   }
 
   getSnapshot() {
-    return this.lastSnapshot;
+    if (!this.lastSnapshot) return { vramUsedGB: 0, vramTotalGB: 8.0, clockMhz: 0, tempC: 0, powerW: 0, loadPercent: 0 };
+    return { ...this.lastSnapshot, tempC: 0, powerW: 0, loadPercent: 0 };
   }
 
   getSafety() {

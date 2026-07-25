@@ -245,6 +245,8 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
         console.log('GPU Mode: Pure parallel orchestration active.');
         
         let round = 0;
+        const startTime = Date.now();
+        let totalSucceeded = 0, totalFailed = 0;
         while (true) {
             // Get ALL pending tasks
             const pendingTasks = await db.all('SELECT * FROM tasks WHERE status = ? ORDER BY id ASC', 'pending');
@@ -263,6 +265,7 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
             }
             
             round++;
+            const roundStart = Date.now();
             console.log(`\n🚀 GPU Round ${round}: ${pendingTasks.length} tasks`);
             
             // Mark all as running in UI
@@ -291,7 +294,9 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
                 }
             }
             
-            console.log(`GPU Round ${round} done: ${completed.length}/${gpuResults.length} succeeded`);
+            console.log(`GPU Round ${round} done: ${completed.length}/${gpuResults.length} succeeded [${(Date.now()-roundStart)/1000}s, ${(Date.now()-startTime)/1000}s total]`);
+            totalSucceeded += completed.length;
+            totalFailed += (gpuResults.length - completed.length);
             
             // Quick validation — mark completed tasks (fire-and-forget expansions in parallel)
             const expansionPromises = [];
@@ -316,8 +321,24 @@ async function orchestrator(config, apiKey, projectRoot, dbPath, screen, logBox,
         }
         
         console.log('\nGPU MISSION COMPLETE!');
+        const elapsed = (Date.now() - startTime) / 1000;
         const snap = gpuOrch.getSnapshot();
-        if (snap) console.log(`Final VRAM: ${snap.vramUsedGB.toFixed(1)}/${snap.vramTotalGB.toFixed(1)} GB`);
+        console.log(`╔═══════════════════════════════════`);
+        console.log(`║ GPU BENCHMARK SUMMARY`);
+        console.log(`╠═══════════════════════════════════`);
+        console.log(`║ Rounds:        ${round}`);
+        console.log(`║ Succeeded:     ${totalSucceeded}`);
+        console.log(`║ Failed:        ${totalFailed}`);
+        console.log(`║ Total tasks:   ${totalSucceeded + totalFailed}`);
+        console.log(`║ Elapsed:       ${elapsed.toFixed(1)}s`);
+        console.log(`║ Avg task time: ${elapsed > 0 ? (elapsed / (totalSucceeded + totalFailed || 1)).toFixed(3) : 'N/A'}s`);
+        const dbTotal = (await db.all('SELECT count(*) as c FROM tasks'))[0].c;
+        console.log(`║ DB total:      ${dbTotal} tasks`);
+        if (snap) {
+            console.log(`║ GPU VRAM:      ${snap.vramUsedGB.toFixed(2)}/${snap.vramTotalGB.toFixed(1)} GB`);
+            console.log(`║ GPU Clock:     ${snap.clockMhz || 'N/A'} MHz`);
+        }
+        console.log(`╚═══════════════════════════════════`);
         gpuOrch.destroy();
         process.exit(0);
         return;
