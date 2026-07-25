@@ -43,6 +43,8 @@ const GPU_SAFE = 0;
 const GPU_THROTTLED = 1;
 const GPU_EMERGENCY_STOP = 2;
 
+export { GPU_SAFE, GPU_THROTTLED, GPU_EMERGENCY_STOP };
+
 export class GpuOrchestrator {
   constructor(options = {}) {
     this.deviceIndex = options.deviceIndex || 0;

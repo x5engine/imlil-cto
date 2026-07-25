@@ -16,7 +16,7 @@ import inquirer from 'inquirer';
 import blessed from 'blessed';
 import contrib from 'blessed-contrib';
 import Piscina from 'piscina';
-import GpuOrchestrator from '../src/gpu/orchestrator.js';
+import GpuOrchestrator, { GPU_EMERGENCY_STOP } from '../src/gpu/orchestrator.js';
 
 // --- API Key Management ---
 
